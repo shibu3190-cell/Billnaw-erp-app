@@ -17,6 +17,15 @@ const _sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 function formatAuthError(error) {
   if (!error) return undefined;
+  if (/already registered|already exists|user exists/i.test(error.message || '')) {
+    return 'An account with this email already exists. Sign in instead.';
+  }
+  if (/signup.*disabled|email signups are disabled/i.test(error.message || '')) {
+    return 'Email signup is disabled in Supabase. Enable the Email provider under Authentication settings.';
+  }
+  if (/password/i.test(error.message || '') && /6|weak|short/i.test(error.message || '')) {
+    return 'Choose a stronger password with at least 6 characters.';
+  }
   if (error.status === 429 || /too many|rate limit/i.test(error.message || '')) {
     return 'Too many OTP requests. Wait for the auth rate limit to reset before trying again.';
   }
@@ -53,7 +62,15 @@ const SB = {
 
   async signIn(email, password) {
     const { data, error } = await _sb.auth.signInWithPassword({ email, password });
-    if (error) return { error: error.message };
+    if (error) {
+      if (/email not confirmed/i.test(error.message || '')) {
+        return { error: 'Email is not confirmed. Disable Confirm email in Supabase Auth settings for local testing.' };
+      }
+      if (/invalid login credentials/i.test(error.message || '')) {
+        return { error: 'Email or password is incorrect.' };
+      }
+      return { error: error.message };
+    }
     return { session: data.session, user: data.user };
   },
 
@@ -119,12 +136,13 @@ const SB = {
 
     const { data: profile, error: profErr } = await _sb
       .from('profiles').select('*').eq('id', session.user.id).single();
-    if (profErr || !profile) return { session, profile: null, shop: null };
+    if (profErr || !profile) return { session, profile: null, shop: null, error: 'Your login works, but this account has no Billnaw profile yet.' };
 
-    const { data: shop } = await _sb
+    const { data: shop, error: shopErr } = await _sb
       .from('shops').select('*').eq('id', profile.shop_id).single();
+    if (shopErr || !shop) return { session, profile, shop: null, error: 'Your profile exists, but no business workspace is linked to it.' };
 
-    return { session, profile, shop: shop || null };
+    return { session, profile, shop, error: null };
   },
 
   /* ---------------- ITEMS ---------------- */

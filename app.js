@@ -283,7 +283,16 @@ APP_STATE.cloudProfile = null;
 
 async function initAuthGate() {
   const overlay = document.getElementById('authOverlay');
-  const { session, profile, shop } = await SB.getSessionAndProfile();
+  const { session, profile, shop, error: accountError } = await SB.getSessionAndProfile();
+
+  if (session && accountError) {
+    APP_STATE.cloudSession = null;
+    setTxt('loginError', accountError);
+    toggleAuthMode('login');
+    showQuickPinBlock(false);
+    if (overlay) overlay.classList.remove('hidden');
+    return;
+  }
 
   if (session && profile && shop) {
     if (shop.status !== 'active') {
@@ -606,8 +615,14 @@ async function signInWithEmail() {
   const password = document.getElementById('loginPassword')?.value;
   if (!email || !password) { setTxt('loginError', 'Enter email and password.'); return; }
 
-  const { error } = await SB.signIn(email, password);
-  if (error) { setTxt('loginError', error); return; }
+  setTxt('loginError', 'Signing in…');
+  try {
+    const { error } = await SB.signIn(email, password);
+    if (error) { setTxt('loginError', error); return; }
+  } catch (error) {
+    setTxt('loginError', 'Unable to reach Supabase. Check your internet connection and try again.');
+    return;
+  }
 
   setTxt('loginError', '');
   await initAuthGate(); // re-run: session now exists, will hydrate + show PIN block
@@ -639,8 +654,8 @@ async function registerNewBusiness() {
   // sign in with email+password), then verify ownership of the address via
   // OTP before the shop record is created.
   const { data: signUpData, error: signUpErr } = await SB.client.auth.signUp({ email, password: accPassword });
-  if (signUpErr && !/already registered/i.test(signUpErr.message)) {
-    setTxt('regError', signUpErr.message);
+  if (signUpErr) {
+    setTxt('regError', formatAuthError(signUpErr));
     return;
   }
 
