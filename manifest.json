@@ -1,0 +1,44 @@
+{
+  "name": "Billnaw Enterprise ERP & POS",
+  "short_name": "Billnaw",
+  "description": "Offline-First Multi-Industry GST Billing, Counter POS, Inventory, Khata & Business Reports",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
+  "orientation": "any",
+  "background_color": "#0d1e18",
+  "theme_color": "#0d1e18",
+  "lang": "en-IN",
+  "categories": ["business", "finance", "productivity"],
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "New POS Bill",
+      "short_name": "Billing",
+      "description": "Open Counter Billing Terminal",
+      "url": "./index.html?view=pos",
+      "icons": [{ "src": "icon.svg", "sizes": "any" }]
+    },
+    {
+      "name": "Business Reports",
+      "short_name": "Reports",
+      "description": "GSTR-1, Customer 360 & Identifier Audit",
+      "url": "./index.html?view=reports",
+      "icons": [{ "src": "icon.svg", "sizes": "any" }]
+    },
+    {
+      "name": "Customer Khata",
+      "short_name": "Khata",
+      "description": "Customer Outstanding Ledger",
+      "url": "./index.html?view=khata",
+      "icons": [{ "src": "icon.svg", "sizes": "any" }]
+    }
+  ]
+}
