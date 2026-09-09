@@ -285,11 +285,17 @@ async function initAuthGate() {
   const overlay = document.getElementById('authOverlay');
   const { session, profile, shop, error: accountError } = await SB.getSessionAndProfile();
 
-  if (session && accountError) {
-    APP_STATE.cloudSession = null;
-    setTxt('loginError', accountError);
-    toggleAuthMode('login');
+  if (session && !profile) {
+    // Signed in, but onboarding is not complete yet. Allow the app to open so the
+    // user can create their workspace/profile without being blocked by a missing row.
+    APP_STATE.cloudSession = session;
+    APP_STATE.cloudProfile = null;
+    toggleAuthMode('register');
     showQuickPinBlock(false);
+    setTxt('regError', 'Your account is active. Finish setup by creating your Billnaw profile.');
+    applyAuthLockState(false);
+    renderDashboard();
+    renderCatalog();
     if (overlay) overlay.classList.remove('hidden');
     return;
   }
@@ -298,15 +304,14 @@ async function initAuthGate() {
     if (shop.status !== 'active') {
       setTxt('loginError', `This shop account is ${shop.status}. Contact support.`);
       await SB.signOut();
+      APP_STATE.cloudSession = null;
+      APP_STATE.cloudProfile = null;
       toggleAuthMode('login');
       showQuickPinBlock(false);
-      if (overlay) overlay.classList.remove('hidden');
+      applyAuthLockState(true);
       return;
     }
 
-    // Real, authenticated session exists — pull shop config + cloud data
-    // into local state, then only require the fast PIN to unlock the
-    // counter (not a full re-login).
     APP_STATE.cloudSession = session;
     APP_STATE.cloudProfile = profile;
     hydrateTenantFromShop(shop);
@@ -315,20 +320,21 @@ async function initAuthGate() {
     toggleAuthMode('login');
     if (APP_STATE.tenantProfile.ownerPin) {
       showQuickPinBlock(true);
-      if (overlay) overlay.classList.remove('hidden');
+      applyAuthLockState(true);
     } else {
       showQuickPinBlock(false);
-      if (overlay) overlay.classList.add('hidden');
+      applyAuthLockState(false);
       applyRoleSecurity(APP_STATE.currentUser.role);
       applyIndustryLock();
       renderDashboard();
       renderCatalog();
     }
   } else {
-    // No session at all — either a brand-new device, or signed out.
-    toggleAuthMode(APP_STATE.tenantProfile.isRegistered ? 'login' : 'register');
+    APP_STATE.cloudSession = null;
+    APP_STATE.cloudProfile = null;
+    toggleAuthMode('login');
     showQuickPinBlock(false);
-    if (overlay) overlay.classList.remove('hidden');
+    applyAuthLockState(true);
   }
   syncProfileToDOM();
 }
@@ -336,6 +342,22 @@ async function initAuthGate() {
 function showQuickPinBlock(show) {
   setDisplay('authEmailLoginBlock', show ? 'none' : 'block');
   setDisplay('quickPinBlock', show ? 'block' : 'none');
+}
+
+function applyAuthLockState(isLocked) {
+  const overlay = document.getElementById('authOverlay');
+  const appShell = document.querySelector('.app-shell');
+
+  if (appShell) {
+    appShell.style.pointerEvents = isLocked ? 'none' : 'auto';
+    appShell.style.filter = isLocked ? 'blur(2px)' : 'none';
+    appShell.style.opacity = isLocked ? '0.55' : '1';
+  }
+
+  if (overlay) {
+    if (isLocked) overlay.classList.remove('hidden');
+    else overlay.classList.add('hidden');
+  }
 }
 
 function hydrateTenantFromShop(shop) {
@@ -437,15 +459,66 @@ const OtpFlow = {
   purpose: null,      // 'signup' | 'login'
   pendingShop: null,  // shop details captured at registration, created after verify
   cooldownTimer: null,
-  sending: false
+  sending: false,
+  lastRequestAt: 0,
+  minRequestGapMs: 30000
+};
+
+const AuthFlowState = {
+  step: 'IDENTIFY',
+  email: '',
+  phone: '',
+  timer: 30,
 };
 
 function setLoginMethod(method) {
   const isEmail = method === 'email';
+  AuthFlowState.step = 'IDENTIFY';
   setDisplay('loginEmailPane', isEmail ? 'block' : 'none');
   setDisplay('loginPhonePane', isEmail ? 'none' : 'block');
   document.getElementById('lmEmailBtn')?.classList.toggle('active', isEmail);
   document.getElementById('lmPhoneBtn')?.classList.toggle('active', !isEmail);
+  if (!isEmail) {
+    setTxt('loginPhoneError', 'Phone sign-in is coming soon — please continue with Email.');
+  }
+}
+
+function showSaasToast(message, duration = 4000) {
+  const toast = document.getElementById('authToast');
+  if (!toast) return;
+  toast.innerText = message;
+  toast.classList.remove('hidden');
+  clearTimeout(showSaasToast.timeoutId);
+  showSaasToast.timeoutId = setTimeout(() => toast.classList.add('hidden'), duration);
+}
+
+function handlePhoneAuthPlaceholder() {
+  const input = document.getElementById('loginPhone');
+  if (input) input.value = normalizePhoneNumber(input.value);
+  showSaasToast('Phone sign-in is coming soon — please continue with Email.', 3200);
+}
+
+function handleGoogleSignIn() {
+  showSaasToast('Google sign-in is ready for the next auth prompt.', 3000);
+}
+
+function completeOnboarding() {
+  const name = document.getElementById('onboardingName')?.value.trim() || 'Billnaw User';
+  const email = document.getElementById('onboardingEmail')?.value.trim() ||'';
+  const role = document.getElementById('onboardingRole')?.value || 'Founder / Owner';
+  const modal = document.getElementById('onboardingModal');
+  if (modal) modal.classList.add('hidden');
+  APP_STATE.tenantProfile.shopName = name;
+  APP_STATE.currentUser.role = role.includes('Owner') || role.includes('Founder') ? 'Owner' : 'Cashier';
+  if (email) {
+    APP_STATE.tenantProfile.phone = APP_STATE.tenantProfile.phone || '0000000000';
+  }
+  setTxt('sideStoreName', name);
+  showSaasToast('Profile confirmed — welcome to Billnaw.', 3200);
+  applyRoleSecurity(APP_STATE.currentUser.role);
+  applyIndustryLock();
+  renderDashboard();
+  renderCatalog();
 }
 
 function togglePasswordVisibility(inputId, button) {
@@ -473,10 +546,11 @@ function showOtpScreen(channel, target, purpose) {
   setDisplay('authEmailLoginBlock', 'none');
   setDisplay('authRegisterView', 'none');
   setDisplay('otpVerifyBlock', 'block');
-  setTxt('otpTargetLabel', target);
+  setTxt('otpTargetLabel', target.includes('@') ? target.replace(/(^.).*(@.*$)/, '$1***$2') : target);
   setTxt('otpError', '');
   clearOtpBoxes();
   document.getElementById('otp-0')?.focus();
+  showSaasToast('OTP Sent - OTP sent via Email. Please check your inbox.', 4000);
   startOtpCooldown();
 }
 
@@ -527,26 +601,38 @@ function onOtpKeydown(e, idx) {
 
 function startOtpCooldown() {
   const btn = document.getElementById('otpResendBtn');
+  const timerLbl = document.getElementById('otpTimerLabel');
   if (!btn) return;
   let secs = 30;
   btn.disabled = true;
-  btn.innerText = `Resend code in ${secs}s`;
+  btn.innerText = `Resend OTP`;
+  if (timerLbl) timerLbl.innerText = `Resend OTP in 00:${String(secs).padStart(2, '0')}`;
   clearInterval(OtpFlow.cooldownTimer);
   OtpFlow.cooldownTimer = setInterval(() => {
     secs--;
     if (secs <= 0) {
       clearInterval(OtpFlow.cooldownTimer);
       btn.disabled = false;
-      btn.innerText = 'Resend code';
+      if (timerLbl) timerLbl.innerText = 'Didn\'t receive OTP? Resend via Email';
+      btn.innerText = 'Resend via Email';
     } else {
-      btn.innerText = `Resend code in ${secs}s`;
+      if (timerLbl) timerLbl.innerText = `Resend OTP in 00:${String(secs).padStart(2, '0')}`;
     }
   }, 1000);
 }
 
 async function sendLoginOtp(channel) {
+  const now = Date.now();
   if (OtpFlow.sending) return;
+  if (now - OtpFlow.lastRequestAt < OtpFlow.minRequestGapMs) {
+    const message = 'Too many OTP requests. Please wait about 30 seconds before retrying.';
+    if (channel === 'email') setTxt('loginError', message);
+    else setTxt('loginPhoneError', message);
+    return;
+  }
+
   OtpFlow.sending = true;
+  OtpFlow.lastRequestAt = now;
   try {
     if (channel === 'email') {
       const email = document.getElementById('loginEmail')?.value.trim();
@@ -557,7 +643,7 @@ async function sendLoginOtp(channel) {
       setTxt('loginError', '');
       showOtpScreen('email', email, 'login');
     } else {
-          const phone = normalizePhoneNumber(document.getElementById('loginPhone')?.value);
+      const phone = normalizePhoneNumber(document.getElementById('loginPhone')?.value);
       const phoneInput = document.getElementById('loginPhone');
       if (phoneInput) phoneInput.value = phone;
       if (!phone || !/^\+?\d{8,15}$/.test(phone)) {
@@ -577,8 +663,14 @@ async function sendLoginOtp(channel) {
 
 async function resendOtp() {
   const btn = document.getElementById('otpResendBtn');
+  const now = Date.now();
   if (OtpFlow.sending || btn?.disabled) return;
+  if (now - OtpFlow.lastRequestAt < OtpFlow.minRequestGapMs) {
+    setTxt('otpError', 'Too many OTP requests. Please wait about 30 seconds before retrying.');
+    return;
+  }
   OtpFlow.sending = true;
+  OtpFlow.lastRequestAt = now;
   if (btn) btn.disabled = true;
   const allowCreate = OtpFlow.purpose === 'signup';
   const { error } = OtpFlow.channel === 'email'
@@ -605,19 +697,32 @@ async function verifyOtpCode() {
     return;
   }
 
-  // Signup path: the auth user now exists and is verified, but has no shop
-  // yet. Create it now — doing it before verification would leave orphan
-  // shop rows for every abandoned signup.
+  // Signup path: once the OTP verifies, the user is created and authenticated.
+  // Create the workspace row now so the user can continue into the app.
   if (OtpFlow.purpose === 'signup' && OtpFlow.pendingShop) {
     const { error: shopErr } = await SB.createShopForCurrentUser(OtpFlow.pendingShop);
     if (shopErr) { setTxt('otpError', shopErr); return; }
     persistState();
     OtpFlow.pendingShop = null;
+    OtpFlow.signupPassword = null;
   }
 
   setTxt('otpError', '');
   setDisplay('otpVerifyBlock', 'none');
-  await initAuthGate();
+  if (OtpFlow.purpose === 'signup') {
+    const modal = document.getElementById('onboardingModal');
+    if (modal) modal.classList.remove('hidden');
+    const emailField = document.getElementById('onboardingEmail');
+    if (emailField) emailField.value = OtpFlow.target || '';
+    const nameField = document.getElementById('onboardingName');
+    if (nameField && !nameField.value) {
+      const shopName = document.getElementById('regShopName')?.value || '';
+      nameField.value = shopName;
+    }
+    await initAuthGate();
+  } else {
+    await initAuthGate();
+  }
 }
 
 async function signInWithEmail() {
@@ -642,8 +747,7 @@ async function fullSignOut() {
   await SB.signOut();
   APP_STATE.cloudSession = null;
   APP_STATE.cloudProfile = null;
-  const overlay = document.getElementById('authOverlay');
-  if (overlay) overlay.classList.remove('hidden');
+  applyAuthLockState(true);
   toggleAuthMode('login');
   showQuickPinBlock(false);
 }
@@ -661,34 +765,28 @@ async function registerNewBusiness() {
   if (!email || !/^\S+@\S+\.\S+$/.test(email)) return setTxt('regError', 'Enter a valid email address.');
   if (accPassword.length < 6) return setTxt('regError', 'Password must be at least 6 characters.');
 
-  setTxt('regError', 'Creating your account…');
+  setTxt('regError', 'Sending verification code…');
 
-  // Create the auth user with the chosen password (so next time they can
-  // sign in with email+password), then verify ownership of the address via
-  // OTP before the shop record is created.
-  const { data: signUpData, error: signUpErr } = await SB.client.auth.signUp({ email, password: accPassword });
-  if (signUpErr) {
-    setTxt('regError', formatAuthError(signUpErr));
-    return;
-  }
-
-  // The schema currently requires an address; complete it from Settings later.
   const pendingShop = { shopName: name, phone, address: 'To be updated', gstin: '', industry: 'All' };
-  const isLocalhost = ['localhost', '127.0.0.1', '[::1]'].includes(window.location.hostname);
-  if (isLocalhost && signUpData?.session) {
-    const { error: shopErr } = await SB.createShopForCurrentUser(pendingShop);
-    if (shopErr) { setTxt('regError', shopErr); return; }
-    persistState();
-    await initAuthGate();
+  const { error: otpErr } = await SB.sendEmailOtp(email, true);
+  if (otpErr) {
+    setTxt('regError', otpErr);
     return;
   }
-
-  const { error: otpErr } = await SB.sendEmailOtp(email, true);
-  if (otpErr) { setTxt('regError', otpErr); return; }
 
   OtpFlow.pendingShop = pendingShop;
+  OtpFlow.signupPassword = accPassword;
   setTxt('regError', '');
   showOtpScreen('email', email, 'signup');
+
+  const onboardingModal = document.getElementById('onboardingModal');
+  if (onboardingModal) {
+    onboardingModal.classList.remove('hidden');
+    const emailField = document.getElementById('onboardingEmail');
+    if (emailField) emailField.value = email;
+    const nameField = document.getElementById('onboardingName');
+    if (nameField) nameField.value = name;
+  }
 }
 
 let pinBuffer = "";
@@ -731,8 +829,9 @@ function verifyPin() {
 }
 function lockPOS() { 
   if (!APP_STATE.tenantProfile.ownerPin) return;
-  const overlay = document.getElementById('authOverlay');
-  if (overlay) overlay.classList.remove('hidden'); 
+  applyAuthLockState(true);
+  toggleAuthMode('login');
+  showQuickPinBlock(true);
 }
 
 /* ==========================================================================
@@ -2553,10 +2652,13 @@ window.addEventListener('DOMContentLoaded', () => {
   populateStateDropdowns();
   loadPrinterAndGstSettingsIntoDOM();
   setLoginMethod('email');
+  applyAuthLockState(true);
   initAuthGate();
   updateNetworkStatus();
-  renderDashboard();
-  renderCatalog();
+  if (APP_STATE.cloudSession && APP_STATE.cloudProfile) {
+    renderDashboard();
+    renderCatalog();
+  }
   updateTaxTypeHint();
   setTxt('pDate', new Date().toLocaleDateString('en-IN'));
 });

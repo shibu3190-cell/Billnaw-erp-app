@@ -15,21 +15,33 @@ const SUPABASE_ANON_KEY = 'sb_publishable_ZXUHlyyfHWx1ViZl1EWDlw_kD5gFNUb';
 
 const _sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
+function getAuthRedirectUrl() {
+  const origin = window.location.origin;
+  const isLocalhost = ['localhost', '127.0.0.1', '[::1]'].includes(window.location.hostname);
+  if (isLocalhost && origin && origin !== 'null') return origin;
+  return origin || 'http://localhost:3000';
+}
+
 function formatAuthError(error) {
   if (!error) return undefined;
-  if (/already registered|already exists|user exists/i.test(error.message || '')) {
+  const msg = error.message || '';
+
+  if (/already registered|already exists|user exists/i.test(msg)) {
     return 'An account with this email already exists. Sign in instead.';
   }
-  if (/signup.*disabled|email signups are disabled/i.test(error.message || '')) {
+  if (/signup.*disabled|email signups are disabled/i.test(msg)) {
     return 'Email signup is disabled in Supabase. Enable the Email provider under Authentication settings.';
   }
-  if (/password/i.test(error.message || '') && /6|weak|short/i.test(error.message || '')) {
+  if (/redirect_to|redirect url|url configuration|site url/i.test(msg) || error.status === 422) {
+    return 'Supabase rejected the signup redirect. Add http://localhost:55160/** to Authentication → URL configuration and make sure your site URL matches the current localhost address.';
+  }
+  if (/password/i.test(msg) && /6|weak|short/i.test(msg)) {
     return 'Choose a stronger password with at least 6 characters.';
   }
-  if (error.status === 429 || /too many|rate limit/i.test(error.message || '')) {
-    return 'Too many OTP requests. Wait for the auth rate limit to reset before trying again.';
+  if (error.status === 429 || /too many|rate limit/i.test(msg)) {
+    return 'Too many OTP requests. Please wait about 30 seconds, then retry. Supabase is rate-limiting email verification requests.';
   }
-  return error.message;
+  return msg;
 }
 
 const SB = {
@@ -38,7 +50,11 @@ const SB = {
   /* ---------------- AUTH ---------------- */
 
   async signUpShop({ email, password, shopName, phone, address, gstin, industry }) {
-    const { data: authData, error: authErr } = await _sb.auth.signUp({ email, password });
+    const { data: authData, error: authErr } = await _sb.auth.signUp({
+      email,
+      password,
+      options: { emailRedirectTo: getAuthRedirectUrl() }
+    });
     if (authErr) return { error: authErr.message };
     const userId = authData.user?.id;
     if (!userId) return { error: 'Signup succeeded but no user id returned — check email confirmation settings.' };
@@ -85,7 +101,12 @@ const SB = {
   async sendEmailOtp(email, allowCreate = false) {
     const { error } = await _sb.auth.signInWithOtp({
       email,
-      options: { shouldCreateUser: allowCreate }
+      options: {
+        shouldCreateUser: allowCreate,
+        // Prefer a code-based OTP for local testing and onboarding. Using a
+        // redirect URL here turns the flow into a magic-link confirmation, which
+        // is the issue the app keeps tripping over on localhost.
+      }
     });
     return { error: formatAuthError(error) };
   },
@@ -132,15 +153,19 @@ const SB = {
 
   async getSessionAndProfile() {
     const { data: { session } } = await _sb.auth.getSession();
-    if (!session) return { session: null, profile: null, shop: null };
+    if (!session) return { session: null, profile: null, shop: null, error: null };
 
     const { data: profile, error: profErr } = await _sb
-      .from('profiles').select('*').eq('id', session.user.id).single();
-    if (profErr || !profile) return { session, profile: null, shop: null, error: 'Your login works, but this account has no Billnaw profile yet.' };
+      .from('profiles').select('*').eq('id', session.user.id).maybeSingle();
+    if (profErr || !profile) {
+      return { session, profile: null, shop: null, error: null };
+    }
 
     const { data: shop, error: shopErr } = await _sb
-      .from('shops').select('*').eq('id', profile.shop_id).single();
-    if (shopErr || !shop) return { session, profile, shop: null, error: 'Your profile exists, but no business workspace is linked to it.' };
+      .from('shops').select('*').eq('id', profile.shop_id).maybeSingle();
+    if (shopErr || !shop) {
+      return { session, profile, shop: null, error: null };
+    }
 
     return { session, profile, shop, error: null };
   },

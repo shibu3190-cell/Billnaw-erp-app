@@ -13,57 +13,56 @@
 
   <!-- AUTHENTICATION GATE -->
   <div id="authOverlay" class="auth-overlay">
+    <div id="authToast" class="auth-toast hidden" role="status" aria-live="polite">OTP Sent - OTP sent via Email. Please check your inbox.</div>
     <div class="auth-box">
       <div class="auth-brand-row">
         <div class="auth-logo" id="authLogoPreview">B</div>
-        <div class="auth-brand-copy"><strong>billnaw</strong><span>Business workspace</span></div>
+        <div class="auth-brand-copy">
+          <strong>billnaw</strong>
+          <span>Business workspace</span>
+        </div>
       </div>
+
       <div class="auth-heading">
-        <p class="auth-eyebrow">WELCOME BACK</p>
-        <h2 id="authModalHeader">Sign in to Billnaw</h2>
-        <p id="authModalSub">Run your business with clarity.</p>
+        <p class="auth-eyebrow">WELCOME</p>
+        <h2 id="authModalHeader">Get Started now</h2>
+        <p id="authModalSub">Log in to explore about our app</p>
       </div>
-      
-      <div class="auth-tab-bar">
+
+      <div class="auth-tab-bar" aria-label="Authentication tabs">
         <button type="button" class="auth-tab-btn active" id="tabLoginBtn" onclick="toggleAuthMode('login')">Sign in</button>
         <button type="button" class="auth-tab-btn" id="tabRegisterBtn" onclick="toggleAuthMode('register')">Create account</button>
       </div>
 
       <!-- VIEW A: SIGN IN -->
       <div id="authLoginView">
-        <!-- Shown only when there is NO active Supabase session yet -->
         <div id="authEmailLoginBlock">
           <div class="login-method-switch">
             <button type="button" class="lm-btn active" id="lmEmailBtn" onclick="setLoginMethod('email')">✉️ Email</button>
-            <button type="button" class="lm-btn" id="lmPhoneBtn" onclick="setLoginMethod('phone')">📱 Phone OTP</button>
+            <button type="button" class="lm-btn" id="lmPhoneBtn" onclick="setLoginMethod('phone')">📱 Phone</button>
           </div>
 
-          <!-- Email + password (with "use OTP instead" escape hatch) -->
           <div id="loginEmailPane">
-            <div class="form-input"><label>Email address</label><input type="email" id="loginEmail" placeholder="you@business.com" autocomplete="username" oninput="clearAuthError('loginError')"></div>
-            <div class="form-input" id="loginPasswordRow"><label>Password</label><div class="password-field"><input type="password" id="loginPassword" placeholder="Password" autocomplete="current-password" oninput="clearAuthError('loginError')"><button type="button" class="password-toggle" onclick="togglePasswordVisibility('loginPassword', this)" aria-label="Show password" title="Show password"><span class="eye-icon" aria-hidden="true"></span></button></div></div>
+            <div class="form-input"><label>Email address</label><div class="field-with-icon"><span class="field-icon" aria-hidden="true">✉</span><input type="email" id="loginEmail" placeholder="name@example.com" autocomplete="username" oninput="clearAuthError('loginError')"></div></div>
+            <div class="form-input" id="loginPasswordRow"><label>Password</label><div class="password-field field-with-icon"><span class="field-icon" aria-hidden="true">●</span><input type="password" id="loginPassword" placeholder="Password" autocomplete="current-password" oninput="clearAuthError('loginError')"><button type="button" class="password-toggle" onclick="togglePasswordVisibility('loginPassword', this)" aria-label="Show password" title="Show password"><span class="eye-icon" aria-hidden="true"></span></button></div></div>
             <p id="loginError" style="color:#f87171; font-size:0.75rem; min-height:16px;"></p>
             <button type="button" class="btn-checkout-act auth-primary-action" style="width:100%;" onclick="signInWithEmail()">Continue <span>→</span></button>
             <button type="button" class="link-btn" onclick="sendLoginOtp('email')">Sign in with a one-time code instead</button>
           </div>
 
-          <!-- Phone OTP -->
           <div id="loginPhonePane" style="display:none;">
             <div class="form-input">
               <label>Mobile Number</label>
               <input type="tel" id="loginPhone" placeholder="+919876543210" autocomplete="tel" oninput="clearAuthError('loginPhoneError')">
             </div>
-            <p style="font-size:0.68rem; color:#8fa59c; margin:-4px 0 8px;">Include country code, e.g. +91 for India.</p>
+            <p id="phoneHelper" class="form-helper">Phone sign-in is coming soon — please continue with Email.</p>
             <p id="loginPhoneError" style="color:#f87171; font-size:0.75rem; min-height:16px;"></p>
-            <button type="button" class="btn-checkout-act" style="width:100%;" onclick="sendLoginOtp('phone')">Send OTP</button>
+            <button type="button" class="btn-checkout-act" style="width:100%;" onclick="handlePhoneAuthPlaceholder()">Send OTP</button>
           </div>
         </div>
 
-        <!-- OTP ENTRY (shared by signup verification + OTP login) -->
         <div id="otpVerifyBlock" style="display:none;">
-          <p style="font-size:0.8rem; color:#cbd5c9; margin-bottom:10px;">
-            We sent a 6-digit code to <strong id="otpTargetLabel">your inbox</strong>.
-          </p>
+          <p class="otp-caption">We sent a 6-digit code to <strong id="otpTargetLabel">your inbox</strong>.</p>
           <div class="otp-input-row">
             <input type="text" inputmode="numeric" maxlength="1" class="otp-box" id="otp-0" oninput="onOtpInput(0)" onkeydown="onOtpKeydown(event,0)">
             <input type="text" inputmode="numeric" maxlength="1" class="otp-box" id="otp-1" oninput="onOtpInput(1)" onkeydown="onOtpKeydown(event,1)">
@@ -73,15 +72,14 @@
             <input type="text" inputmode="numeric" maxlength="1" class="otp-box" id="otp-5" oninput="onOtpInput(5)" onkeydown="onOtpKeydown(event,5)">
           </div>
           <p id="otpError" style="color:#f87171; font-size:0.75rem; min-height:16px;"></p>
-          <button type="button" class="btn-checkout-act" style="width:100%;" onclick="verifyOtpCode()">Verify &amp; Continue</button>
-          <button type="button" class="link-btn" id="otpResendBtn" onclick="resendOtp()">Resend code</button>
-          <button type="button" class="link-btn" onclick="cancelOtpFlow()">← Back</button>
+          <button type="button" class="btn-checkout-act" style="width:100%;" onclick="verifyOtpCode()">Verify OTP ✓</button>
+          <div class="otp-actions-row">
+            <button type="button" class="link-btn" id="otpResendBtn" onclick="resendOtp()">Resend OTP</button>
+            <button type="button" class="link-btn" onclick="cancelOtpFlow()">Edit Email</button>
+          </div>
+          <div class="otp-timer" id="otpTimerLabel">Resend OTP in 00:30</div>
         </div>
 
-        <!-- Shown only when a Supabase session already exists — this PIN
-             is a fast shift-lock, not the real security boundary. Real
-             auth is the Supabase session + RLS; this just saves the owner
-             from re-typing their password every time they step away. -->
         <div id="quickPinBlock" style="display:none;">
           <div class="role-selector" style="margin-bottom:12px;">
             <button type="button" class="role-chip active" onclick="setAuthRole('Owner', this)">👑 Owner</button>
@@ -110,20 +108,37 @@
             <button type="button" class="num-btn" onclick="pressPin('0')">0</button>
             <button type="button" class="num-btn" style="color:#8fa59c;" onclick="backspacePin()">⌫</button>
           </div>
-          <button type="button" style="background:none; border:none; color:#8fa59c; font-size:0.75rem; margin-top:10px; cursor:pointer; text-decoration:underline;" onclick="fullSignOut()">Not you? Sign out of this account</button>
+          <button type="button" style="background:none; border:none; color:#8fa59c; font-size:0.75rem; margin-top:12px; cursor:pointer; text-decoration:underline;" onclick="fullSignOut()">Not you? Sign out of this account</button>
         </div>
       </div>
 
-      <!-- VIEW B: REGISTER SHOP -->
       <div id="authRegisterView" style="display:none; text-align:left;">
         <p class="auth-form-intro">Set up your workspace in under a minute. You can complete your business profile later.</p>
-        <div class="form-input"><label>Business name</label><input type="text" id="regShopName" placeholder="e.g. Om Betar Bhawan" autocomplete="organization" required oninput="clearAuthError('regError')"></div>
-        <div class="form-input"><label>Phone number</label><input type="tel" id="regPhone" placeholder="+91 9876543210" autocomplete="tel" required oninput="clearAuthError('regError')"></div>
-        <div class="form-input"><label>Email address</label><input type="email" id="regEmail" placeholder="you@business.com" autocomplete="email" required oninput="clearAuthError('regError')"></div>
-        <div class="form-input"><label>Password</label><div class="password-field"><input type="password" id="regAccPassword" placeholder="At least 6 characters" autocomplete="new-password" required oninput="clearAuthError('regError')"><button type="button" class="password-toggle" onclick="togglePasswordVisibility('regAccPassword', this)" aria-label="Show password" title="Show password"><span class="eye-icon" aria-hidden="true"></span></button></div></div>
+        <div class="form-input"><label>Business name</label><div class="field-with-icon"><span class="field-icon" aria-hidden="true">▣</span><input type="text" id="regShopName" placeholder="e.g. Om Betar Bhawan" autocomplete="organization" required oninput="clearAuthError('regError')"></div></div>
+        <div class="form-input"><label>Phone number</label><div class="field-with-icon"><span class="field-icon" aria-hidden="true">☎</span><input type="tel" id="regPhone" placeholder="+91 9876543210" autocomplete="tel" required oninput="clearAuthError('regError')"></div></div>
+        <div class="form-input"><label>Email address</label><div class="field-with-icon"><span class="field-icon" aria-hidden="true">✉</span><input type="email" id="regEmail" placeholder="you@business.com" autocomplete="email" required oninput="clearAuthError('regError')"></div></div>
+        <div class="form-input"><label>Password</label><div class="password-field field-with-icon"><span class="field-icon" aria-hidden="true">●</span><input type="password" id="regAccPassword" placeholder="At least 6 characters" autocomplete="new-password" required oninput="clearAuthError('regError')"><button type="button" class="password-toggle" onclick="togglePasswordVisibility('regAccPassword', this)" aria-label="Show password" title="Show password"><span class="eye-icon" aria-hidden="true"></span></button></div></div>
         <p id="regError" style="color:#f87171; font-size:0.75rem; min-height:16px;"></p>
         <button type="button" class="btn-checkout-act auth-primary-action" style="width:100%; margin-top:10px;" onclick="registerNewBusiness()">Create workspace <span>→</span></button>
+        <button type="button" class="social-button" style="width:100%; margin-top:10px;" onclick="handleGoogleSignIn()">Continue with Google</button>
       </div>
+    </div>
+  </div>
+
+  <div id="onboardingModal" class="onboarding-backdrop hidden" aria-modal="true" role="dialog">
+    <div class="onboarding-dialog">
+      <div class="onboarding-badge">✓</div>
+      <div class="onboarding-stepper">
+        <span class="step-dot active"></span>
+        <span class="step-dot"></span>
+        <span class="step-dot"></span>
+      </div>
+      <h3>Confirm Profile</h3>
+      <p>You can always change this in settings.</p>
+      <div class="form-input"><label>Full Name</label><input type="text" id="onboardingName" placeholder="Alex Morgan"></div>
+      <div class="form-input"><label>Email Address</label><div class="verified-input"><input type="email" id="onboardingEmail" value="name@example.com" readonly><span class="verified-pill">Verified</span></div></div>
+      <div class="form-input"><label>Role / Age Group</label><select id="onboardingRole"><option>Founder / Owner</option><option>Operations Manager</option><option>Finance</option><option>Sales</option></select></div>
+      <button type="button" class="btn-checkout-act auth-primary-action" style="width:100%;" onclick="completeOnboarding()">Continue</button>
     </div>
   </div>
 
