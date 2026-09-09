@@ -458,6 +458,14 @@ function togglePasswordVisibility(inputId, button) {
   button.title = isVisible ? 'Show password' : 'Hide password';
 }
 
+function normalizePhoneNumber(rawValue) {
+  return String(rawValue || '').trim().replace(/[^\d+]/g, '').replace(/(?!^)\+/g, '');
+}
+
+function clearAuthError(elementId) {
+  if (elementId) setTxt(elementId, '');
+}
+
 function showOtpScreen(channel, target, purpose) {
   OtpFlow.channel = channel;
   OtpFlow.target = target;
@@ -549,8 +557,10 @@ async function sendLoginOtp(channel) {
       setTxt('loginError', '');
       showOtpScreen('email', email, 'login');
     } else {
-      const phone = document.getElementById('loginPhone')?.value.trim();
-      if (!phone || !/^\+\d{8,15}$/.test(phone)) {
+          const phone = normalizePhoneNumber(document.getElementById('loginPhone')?.value);
+      const phoneInput = document.getElementById('loginPhone');
+      if (phoneInput) phoneInput.value = phone;
+      if (!phone || !/^\+?\d{8,15}$/.test(phone)) {
         setTxt('loginPhoneError', 'Enter number with country code, e.g. +919876543210');
         return;
       }
@@ -640,11 +650,14 @@ async function fullSignOut() {
 
 async function registerNewBusiness() {
   const name = document.getElementById('regShopName')?.value.trim() || '';
-  const phone = document.getElementById('regPhone')?.value.trim() || '';
+  const phoneInput = document.getElementById('regPhone');
+  const phone = normalizePhoneNumber(phoneInput?.value || '');
+  if (phoneInput) phoneInput.value = phone;
   const email = document.getElementById('regEmail')?.value.trim() || '';
   const accPassword = document.getElementById('regAccPassword')?.value || '';
 
-  if (!name || !phone) return setTxt('regError', 'Business name and phone number are required.');
+  if (!name) return setTxt('regError', 'Business name is required.');
+  if (!phone || !/^\+?\d{8,15}$/.test(phone)) return setTxt('regError', 'Use a valid mobile number with country code, e.g. +919876543210.');
   if (!email || !/^\S+@\S+\.\S+$/.test(email)) return setTxt('regError', 'Enter a valid email address.');
   if (accPassword.length < 6) return setTxt('regError', 'Password must be at least 6 characters.');
 
