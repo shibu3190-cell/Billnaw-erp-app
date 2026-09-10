@@ -169,10 +169,6 @@ create policy shops_select on shops for select
     or (id = my_shop_id() and status = 'active')
   );
 
-drop policy if exists shops_insert_authenticated on shops;
-create policy shops_insert_authenticated on shops for insert
-  with check (auth.uid() is not null);
-
 drop policy if exists shops_update_owner on shops;
 create policy shops_update_owner on shops for update
   using (my_role() = 'super_admin' or (id = my_shop_id() and my_role() = 'owner' and status = 'active'))
@@ -182,10 +178,6 @@ create policy shops_update_owner on shops for update
 drop policy if exists profiles_select on profiles;
 create policy profiles_select on profiles for select
   using (id = auth.uid() or my_role() = 'super_admin');
-
-drop policy if exists profiles_insert_self on profiles;
-create policy profiles_insert_self on profiles for insert
-  with check (id = auth.uid());
 
 drop policy if exists profiles_update_self on profiles;
 create policy profiles_update_self on profiles for update

@@ -15,46 +15,13 @@ const SUPABASE_ANON_KEY = 'sb_publishable_ZXUHlyyfHWx1ViZl1EWDlw_kD5gFNUb';
 
 const _sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-function getAuthRedirectUrl() {
-  const origin = window.location.origin;
-  const isLocalhost = ['localhost', '127.0.0.1', '[::1]'].includes(window.location.hostname);
-  if (isLocalhost && origin && origin !== 'null') return origin;
-  return origin || 'http://localhost:3000';
-}
-
-function formatAuthError(error) {
-  if (!error) return undefined;
-  const msg = error.message || '';
-
-  if (/already registered|already exists|user exists/i.test(msg)) {
-    return 'An account with this email already exists. Sign in instead.';
-  }
-  if (/signup.*disabled|email signups are disabled/i.test(msg)) {
-    return 'Email signup is disabled in Supabase. Enable the Email provider under Authentication settings.';
-  }
-  if (/redirect_to|redirect url|url configuration|site url/i.test(msg) || error.status === 422) {
-    return 'Supabase rejected the signup redirect. Add http://localhost:55160/** to Authentication → URL configuration and make sure your site URL matches the current localhost address.';
-  }
-  if (/password/i.test(msg) && /6|weak|short/i.test(msg)) {
-    return 'Choose a stronger password with at least 6 characters.';
-  }
-  if (error.status === 429 || /too many|rate limit/i.test(msg)) {
-    return 'Too many OTP requests. Please wait about 30 seconds, then retry. Supabase is rate-limiting email verification requests.';
-  }
-  return msg;
-}
-
 const SB = {
   client: _sb,
 
   /* ---------------- AUTH ---------------- */
 
   async signUpShop({ email, password, shopName, phone, address, gstin, industry }) {
-    const { data: authData, error: authErr } = await _sb.auth.signUp({
-      email,
-      password,
-      options: { emailRedirectTo: getAuthRedirectUrl() }
-    });
+    const { data: authData, error: authErr } = await _sb.auth.signUp({ email, password });
     if (authErr) return { error: authErr.message };
     const userId = authData.user?.id;
     if (!userId) return { error: 'Signup succeeded but no user id returned — check email confirmation settings.' };
@@ -78,15 +45,7 @@ const SB = {
 
   async signIn(email, password) {
     const { data, error } = await _sb.auth.signInWithPassword({ email, password });
-    if (error) {
-      if (/email not confirmed/i.test(error.message || '')) {
-        return { error: 'Email is not confirmed. Disable Confirm email in Supabase Auth settings for local testing.' };
-      }
-      if (/invalid login credentials/i.test(error.message || '')) {
-        return { error: 'Email or password is incorrect.' };
-      }
-      return { error: error.message };
-    }
+    if (error) return { error: error.message };
     return { session: data.session, user: data.user };
   },
 
@@ -101,14 +60,9 @@ const SB = {
   async sendEmailOtp(email, allowCreate = false) {
     const { error } = await _sb.auth.signInWithOtp({
       email,
-      options: {
-        shouldCreateUser: allowCreate,
-        // Prefer a code-based OTP for local testing and onboarding. Using a
-        // redirect URL here turns the flow into a magic-link confirmation, which
-        // is the issue the app keeps tripping over on localhost.
-      }
+      options: { shouldCreateUser: allowCreate }
     });
-    return { error: formatAuthError(error) };
+    return { error: error?.message };
   },
 
   async verifyEmailOtp(email, token) {
@@ -121,7 +75,7 @@ const SB = {
       phone,
       options: { shouldCreateUser: allowCreate }
     });
-    return { error: formatAuthError(error) };
+    return { error: error?.message };
   },
 
   async verifyPhoneOtp(phone, token) {
@@ -129,51 +83,73 @@ const SB = {
     return { session: data?.session, error: error?.message };
   },
 
-  // Used right after signup-OTP verification, when the auth user now exists
-  // but has no shop/profile yet.
-  async createShopForCurrentUser({ shopName, phone, address, gstin, industry }) {
+  async getSessionAndProfile() {
     const { data: { session } } = await _sb.auth.getSession();
-    if (!session) return { error: 'No active session.' };
+    if (!session) return { session: null, profile: null, shop: null };
 
-    const stateCode = gstin && gstin.length >= 2 ? gstin.slice(0, 2) : null;
+    const { data: profile } = await _sb
+      .from('profiles').select('*').eq('id', session.user.id).maybeSingle();
+    if (!profile) return { session, profile: null, shop: null };
+
+    const { data: shop } = await _sb
+      .from('shops').select('*').eq('id', profile.shop_id).maybeSingle();
+
+    return { session, profile, shop: shop || null };
+  },
+
+  async signInWithGoogle() {
+    const { error } = await _sb.auth.signInWithOAuth({
+      provider: 'google',
+      options: { redirectTo: window.location.origin + window.location.pathname }
+    });
+    return { error: error?.message };
+  },
+
+  // Called after OTP verification, when the auth user exists but has no
+  // shop yet. Deliberately not called earlier: creating the shop before
+  // verification leaves orphan rows for every abandoned signup.
+  async createShopForCurrentUser({ shopName, ownerName, phone, email, address, gstin, stateCode, industry }) {
+    const { data: { session } } = await _sb.auth.getSession();
+    if (!session) return { error: 'Session expired. Please sign in again.' };
+
+    const resolvedState = stateCode || (gstin && gstin.length >= 2 ? gstin.slice(0, 2) : null);
 
     const { data: shop, error: shopErr } = await _sb
       .from('shops')
-      .insert({ name: shopName, phone, address, gstin, state_code: stateCode, industry, is_locked: industry !== 'All' })
+      .insert({
+        name: shopName, owner_name: ownerName, phone, email: email || null,
+        address, gstin: gstin || null, state_code: resolvedState,
+        industry, is_locked: industry !== 'All'
+      })
       .select().single();
     if (shopErr) return { error: shopErr.message };
 
     const { error: profileErr } = await _sb
       .from('profiles')
-      .insert({ id: session.user.id, shop_id: shop.id, role: 'owner', full_name: shopName });
+      .insert({ id: session.user.id, shop_id: shop.id, role: 'owner', full_name: ownerName || shopName });
     if (profileErr) return { error: profileErr.message };
 
     return { shop };
   },
 
-  async getSessionAndProfile() {
-    const { data: { session } } = await _sb.auth.getSession();
-    if (!session) return { session: null, profile: null, shop: null, error: null };
+  async updateShopSettings(shopId, patch) {
+    const { error } = await _sb.from('shops').update(patch).eq('id', shopId);
+    return { error: error?.message };
+  },
 
-    const { data: profile, error: profErr } = await _sb
-      .from('profiles').select('*').eq('id', session.user.id).maybeSingle();
-    if (profErr || !profile) {
-      return { session, profile: null, shop: null, error: null };
-    }
-
-    const { data: shop, error: shopErr } = await _sb
-      .from('shops').select('*').eq('id', profile.shop_id).maybeSingle();
-    if (shopErr || !shop) {
-      return { session, profile, shop: null, error: null };
-    }
-
-    return { session, profile, shop, error: null };
+  async fetchShopStaff(shopId) {
+    const { data, error } = await _sb
+      .from('profiles').select('full_name, role, id').eq('shop_id', shopId).order('role');
+    return { data: data || [], error: error?.message };
   },
 
   /* ---------------- ITEMS ---------------- */
 
+  // Routed through an RPC rather than a direct table select so the server
+  // can null out `cost` for cashiers. A direct select would ship the whole
+  // cost book to any staff device.
   async fetchItems(shopId) {
-    const { data, error } = await _sb.from('items').select('*').eq('shop_id', shopId).order('name');
+    const { data, error } = await _sb.rpc('fetch_items_for_role', { p_shop_id: shopId });
     return { data: data || [], error: error?.message };
   },
 
@@ -205,26 +181,77 @@ const SB = {
 
   /* ---------------- SALES ---------------- */
 
+  // Single atomic call: inserts the invoice, decrements every line's stock,
+  // and upserts the customer inside ONE Postgres transaction. Previously
+  // these were three separate network calls — a drop between them could
+  // save an invoice whose stock never moved.
   async saveSale(shopId, invoice) {
-    const { data, error } = await _sb.from('sales').insert({
-      shop_id: shopId,
-      invoice_no: invoice.invoiceNo,
-      idempotency_key: invoice.idempotency_key,
-      customer_snapshot: invoice.customer,
-      tender: invoice.tender,
-      taxable: invoice.taxable,
-      gst_total: invoice.gstTotal,
-      round_off: invoice.roundOff,
-      total: invoice.total,
-      interstate: invoice.interstate,
-      items: invoice.items,
-    }).select().single();
+    const { data, error } = await _sb.rpc('create_invoice_atomic', {
+      p_shop_id: shopId,
+      p_invoice: {
+        invoice_no: invoice.invoiceNo,
+        idempotency_key: invoice.idempotency_key,
+        customer_snapshot: invoice.customer,
+        tender: invoice.tender,
+        taxable: invoice.taxable,
+        gst_total: invoice.gstTotal,
+        round_off: invoice.roundOff,
+        total: invoice.total,
+        interstate: invoice.interstate,
+        place_of_supply: invoice.placeOfSupply || null,
+        industry: invoice.industry || null,
+        items: invoice.items
+      }
+    });
     return { data, error: error?.message };
   },
 
   async fetchSales(shopId, limit = 200) {
+    const { data, error } = await _sb.rpc('fetch_sales_for_role', { p_shop_id: shopId, p_limit: limit });
+    return { data: data || [], error: error?.message };
+  },
+
+  // Owner-only; the server raises for cashiers rather than trusting the UI.
+  async fetchProfitSummary(shopId, from, to) {
+    const { data, error } = await _sb.rpc('shop_profit_summary', {
+      p_shop_id: shopId, p_from: from || null, p_to: to || null
+    });
+    return { data, error: error?.message };
+  },
+
+  /* ---------------- RETURNS / CREDIT NOTES ---------------- */
+
+  async fetchReturnableLines(shopId, saleId) {
+    const { data, error } = await _sb.rpc('returnable_lines', {
+      p_shop_id: shopId, p_sale_id: saleId
+    });
+    return { data: data || [], error: error?.message };
+  },
+
+  // Atomic: credit note + restock + identifier restore + ledger credit +
+  // parent invoice status, all in one Postgres transaction.
+  async processReturn(shopId, saleId, ret) {
+    const { data, error } = await _sb.rpc('process_sales_return_atomic', {
+      p_shop_id: shopId,
+      p_sale_id: saleId,
+      p_return: {
+        credit_note_no: ret.creditNoteNo,
+        idempotency_key: ret.idempotency_key,
+        reason: ret.reason || null,
+        restock: ret.restock !== false,
+        taxable: ret.taxable,
+        gst_total: ret.gstTotal,
+        round_off: ret.roundOff,
+        total: ret.total,
+        items: ret.items
+      }
+    });
+    return { data, error: error?.message };
+  },
+
+  async fetchReturns(shopId, limit = 200) {
     const { data, error } = await _sb
-      .from('sales').select('*').eq('shop_id', shopId)
+      .from('sales_returns').select('*').eq('shop_id', shopId)
       .order('created_at', { ascending: false }).limit(limit);
     return { data: data || [], error: error?.message };
   },

@@ -3,10 +3,8 @@
 ## 1. Create the Supabase project
 1. supabase.com → New Project. Note the **Project URL** and **anon public key**
    (Settings → API) — you'll need both in step 3.
-2. Settings → Auth → disable "Confirm email" for local development. When the
-   app runs on localhost, signup skips the OTP email and creates the shop
-   immediately. Turn this back on before real customers sign up, so bogus
-   emails can't register.
+2. Settings → Auth → disable "Confirm email" for now (dev convenience — turn
+   it back on before real customers sign up, so bogus emails can't register).
 
 ## 2. Run the database migrations
 1. Supabase Dashboard → SQL Editor → New query.

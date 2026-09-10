@@ -147,9 +147,7 @@ Run these in order and tick each one off.
    - PIN: `4821`
 3. Click **Save & Launch Terminal**.
 
-**Expect:** on localhost with Confirm email disabled, signup goes directly to
-the PIN unlock screen. OTP verification remains enabled for non-localhost
-deployments.
+**Expect:** the 6-box OTP screen appears. Check your email for the code.
 
 4. Type the code (it auto-submits on the 6th digit).
 

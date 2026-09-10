@@ -4,148 +4,183 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <title>Billnaw Enterprise POS, ERP &amp; Reports</title>
-  <link rel="icon" href="icon.svg" type="image/svg+xml">
   <link rel="manifest" href="manifest.json">
   <link rel="stylesheet" href="styles.css">
-  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
 </head>
 <body>
 
-  <!-- AUTHENTICATION GATE -->
+  <!-- Inline icon sprite. Line icons render crisply at any size and inherit
+       currentColor, so they follow the active/inactive nav state without a
+       second asset. Cheaper than an icon font and works fully offline. -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <defs>
+      <g id="i-home"><path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></g>
+      <g id="i-users"><circle cx="9" cy="8" r="3.2"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16.5 5.5a3.2 3.2 0 0 1 0 6"/><path d="M17.5 14.2A6.5 6.5 0 0 1 21.5 20"/></g>
+      <g id="i-box"><path d="M21 8 12 3 3 8v8l9 5 9-5z"/><path d="m3 8 9 5 9-5"/><path d="M12 13v8"/></g>
+      <g id="i-cart"><circle cx="9.5" cy="20" r="1.3"/><circle cx="18" cy="20" r="1.3"/><path d="M2.5 3h2.2l2.6 12.2a1.5 1.5 0 0 0 1.5 1.2h9.1a1.5 1.5 0 0 0 1.5-1.2L21 7H6"/></g>
+      <g id="i-doc"><path d="M14 3H7a1.5 1.5 0 0 0-1.5 1.5v15A1.5 1.5 0 0 0 7 21h10a1.5 1.5 0 0 0 1.5-1.5V7.5z"/><path d="M14 3v4.5h4.5"/><path d="M8.5 13h7M8.5 17h5"/></g>
+      <g id="i-chart"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></g>
+      <g id="i-wallet"><path d="M20 7H5.5A2.5 2.5 0 0 1 3 4.5v0A2.5 2.5 0 0 1 5.5 2H19"/><path d="M3 4.5v13A2.5 2.5 0 0 0 5.5 20H20a1 1 0 0 0 1-1V8a1 1 0 0 0-1-1"/><circle cx="16.5" cy="13.5" r="1.2"/></g>
+      <g id="i-gear"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-2.7 1.1v.3a2 2 0 1 1-4 0v-.2a1.6 1.6 0 0 0-2.8-1.1l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.6 1.6 0 0 0 3.5 14H3a2 2 0 1 1 0-4h.2A1.6 1.6 0 0 0 4.3 7.2l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.6 1.6 0 0 0 10 3.5V3a2 2 0 1 1 4 0v.2a1.6 1.6 0 0 0 2.7 1.1l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0 1.1 2.7h.3a2 2 0 1 1 0 4h-.2a1.6 1.6 0 0 0-1.3 1.2z"/></g>
+      <g id="i-scan"><path d="M3 8V5.5A2.5 2.5 0 0 1 5.5 3H8M16 3h2.5A2.5 2.5 0 0 1 21 5.5V8M21 16v2.5a2.5 2.5 0 0 1-2.5 2.5H16M8 21H5.5A2.5 2.5 0 0 1 3 18.5V16"/><path d="M3 12h18"/></g>
+      <g id="i-truck"><path d="M2.5 16V6.5a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1V16"/><path d="M14.5 9H18l3 3.5V16h-6.5"/><circle cx="7" cy="18" r="1.8"/><circle cx="17.5" cy="18" r="1.8"/></g>
+    </defs>
+  </svg>
+
+  <!-- ==========================================================
+       AUTHENTICATION — OTP-first. No PIN. Supabase session is the
+       only thing that grants access; RLS enforces what it can see.
+       ========================================================== -->
   <div id="authOverlay" class="auth-overlay">
-    <div id="authToast" class="auth-toast hidden" role="status" aria-live="polite">OTP Sent - OTP sent via Email. Please check your inbox.</div>
-    <div class="auth-box">
-      <div class="auth-brand-row">
-        <div class="auth-logo" id="authLogoPreview">B</div>
-        <div class="auth-brand-copy">
-          <strong>billnaw</strong>
-          <span>Business workspace</span>
-        </div>
+    <div id="authToast" class="saas-toast hidden"></div>
+
+    <!-- Brand panel (top) -->
+    <div class="auth-hero">
+      <div class="auth-brand">
+        <span class="auth-brand-mark">bn</span>
+        <span class="auth-brand-word">Billnaw</span>
       </div>
-
-      <div class="auth-heading">
-        <p class="auth-eyebrow">WELCOME</p>
-        <h2 id="authModalHeader">Get Started now</h2>
-        <p id="authModalSub">Log in to explore about our app</p>
-      </div>
-
-      <div class="auth-tab-bar" aria-label="Authentication tabs">
-        <button type="button" class="auth-tab-btn active" id="tabLoginBtn" onclick="toggleAuthMode('login')">Sign in</button>
-        <button type="button" class="auth-tab-btn" id="tabRegisterBtn" onclick="toggleAuthMode('register')">Create account</button>
-      </div>
-
-      <!-- VIEW A: SIGN IN -->
-      <div id="authLoginView">
-        <div id="authEmailLoginBlock">
-          <div class="login-method-switch">
-            <button type="button" class="lm-btn active" id="lmEmailBtn" onclick="setLoginMethod('email')">✉️ Email</button>
-            <button type="button" class="lm-btn" id="lmPhoneBtn" onclick="setLoginMethod('phone')">📱 Phone</button>
-          </div>
-
-          <div id="loginEmailPane">
-            <div class="form-input"><label>Email address</label><div class="field-with-icon"><span class="field-icon" aria-hidden="true">✉</span><input type="email" id="loginEmail" placeholder="name@example.com" autocomplete="username" oninput="clearAuthError('loginError')"></div></div>
-            <div class="form-input" id="loginPasswordRow"><label>Password</label><div class="password-field field-with-icon"><span class="field-icon" aria-hidden="true">●</span><input type="password" id="loginPassword" placeholder="Password" autocomplete="current-password" oninput="clearAuthError('loginError')"><button type="button" class="password-toggle" onclick="togglePasswordVisibility('loginPassword', this)" aria-label="Show password" title="Show password"><span class="eye-icon" aria-hidden="true"></span></button></div></div>
-            <p id="loginError" style="color:#f87171; font-size:0.75rem; min-height:16px;"></p>
-            <button type="button" class="btn-checkout-act auth-primary-action" style="width:100%;" onclick="signInWithEmail()">Continue <span>→</span></button>
-            <button type="button" class="link-btn" onclick="sendLoginOtp('email')">Sign in with a one-time code instead</button>
-          </div>
-
-          <div id="loginPhonePane" style="display:none;">
-            <div class="form-input">
-              <label>Mobile Number</label>
-              <input type="tel" id="loginPhone" placeholder="+919876543210" autocomplete="tel" oninput="clearAuthError('loginPhoneError')">
-            </div>
-            <p id="phoneHelper" class="form-helper">Phone sign-in is coming soon — please continue with Email.</p>
-            <p id="loginPhoneError" style="color:#f87171; font-size:0.75rem; min-height:16px;"></p>
-            <button type="button" class="btn-checkout-act" style="width:100%;" onclick="handlePhoneAuthPlaceholder()">Send OTP</button>
-          </div>
-        </div>
-
-        <div id="otpVerifyBlock" style="display:none;">
-          <p class="otp-caption">We sent a 6-digit code to <strong id="otpTargetLabel">your inbox</strong>.</p>
-          <div class="otp-input-row">
-            <input type="text" inputmode="numeric" maxlength="1" class="otp-box" id="otp-0" oninput="onOtpInput(0)" onkeydown="onOtpKeydown(event,0)">
-            <input type="text" inputmode="numeric" maxlength="1" class="otp-box" id="otp-1" oninput="onOtpInput(1)" onkeydown="onOtpKeydown(event,1)">
-            <input type="text" inputmode="numeric" maxlength="1" class="otp-box" id="otp-2" oninput="onOtpInput(2)" onkeydown="onOtpKeydown(event,2)">
-            <input type="text" inputmode="numeric" maxlength="1" class="otp-box" id="otp-3" oninput="onOtpInput(3)" onkeydown="onOtpKeydown(event,3)">
-            <input type="text" inputmode="numeric" maxlength="1" class="otp-box" id="otp-4" oninput="onOtpInput(4)" onkeydown="onOtpKeydown(event,4)">
-            <input type="text" inputmode="numeric" maxlength="1" class="otp-box" id="otp-5" oninput="onOtpInput(5)" onkeydown="onOtpKeydown(event,5)">
-          </div>
-          <p id="otpError" style="color:#f87171; font-size:0.75rem; min-height:16px;"></p>
-          <button type="button" class="btn-checkout-act" style="width:100%;" onclick="verifyOtpCode()">Verify OTP ✓</button>
-          <div class="otp-actions-row">
-            <button type="button" class="link-btn" id="otpResendBtn" onclick="resendOtp()">Resend OTP</button>
-            <button type="button" class="link-btn" onclick="cancelOtpFlow()">Edit Email</button>
-          </div>
-          <div class="otp-timer" id="otpTimerLabel">Resend OTP in 00:30</div>
-        </div>
-
-        <div id="quickPinBlock" style="display:none;">
-          <div class="role-selector" style="margin-bottom:12px;">
-            <button type="button" class="role-chip active" onclick="setAuthRole('Owner', this)">👑 Owner</button>
-            <button type="button" class="role-chip" onclick="setAuthRole('Cashier', this)">🛒 Staff</button>
-          </div>
-
-          <div class="pin-dots">
-            <div class="pin-dot" id="pdot-0"></div>
-            <div class="pin-dot" id="pdot-1"></div>
-            <div class="pin-dot" id="pdot-2"></div>
-            <div class="pin-dot" id="pdot-3"></div>
-          </div>
-          <p id="authError" style="color:#f87171; font-size:0.75rem; min-height:16px; margin-bottom:8px;"></p>
-
-          <div class="numpad">
-            <button type="button" class="num-btn" onclick="pressPin('1')">1</button>
-            <button type="button" class="num-btn" onclick="pressPin('2')">2</button>
-            <button type="button" class="num-btn" onclick="pressPin('3')">3</button>
-            <button type="button" class="num-btn" onclick="pressPin('4')">4</button>
-            <button type="button" class="num-btn" onclick="pressPin('5')">5</button>
-            <button type="button" class="num-btn" onclick="pressPin('6')">6</button>
-            <button type="button" class="num-btn" onclick="pressPin('7')">7</button>
-            <button type="button" class="num-btn" onclick="pressPin('8')">8</button>
-            <button type="button" class="num-btn" onclick="pressPin('9')">9</button>
-            <button type="button" class="num-btn" style="color:#8fa59c;" onclick="clearPin()">C</button>
-            <button type="button" class="num-btn" onclick="pressPin('0')">0</button>
-            <button type="button" class="num-btn" style="color:#8fa59c;" onclick="backspacePin()">⌫</button>
-          </div>
-          <button type="button" style="background:none; border:none; color:#8fa59c; font-size:0.75rem; margin-top:12px; cursor:pointer; text-decoration:underline;" onclick="fullSignOut()">Not you? Sign out of this account</button>
-        </div>
-      </div>
-
-      <div id="authRegisterView" style="display:none; text-align:left;">
-        <p class="auth-form-intro">Set up your workspace in under a minute. You can complete your business profile later.</p>
-        <div class="form-input"><label>Business name</label><div class="field-with-icon"><span class="field-icon" aria-hidden="true">▣</span><input type="text" id="regShopName" placeholder="e.g. Om Betar Bhawan" autocomplete="organization" required oninput="clearAuthError('regError')"></div></div>
-        <div class="form-input"><label>Phone number</label><div class="field-with-icon"><span class="field-icon" aria-hidden="true">☎</span><input type="tel" id="regPhone" placeholder="+91 9876543210" autocomplete="tel" required oninput="clearAuthError('regError')"></div></div>
-        <div class="form-input"><label>Email address</label><div class="field-with-icon"><span class="field-icon" aria-hidden="true">✉</span><input type="email" id="regEmail" placeholder="you@business.com" autocomplete="email" required oninput="clearAuthError('regError')"></div></div>
-        <div class="form-input"><label>Password</label><div class="password-field field-with-icon"><span class="field-icon" aria-hidden="true">●</span><input type="password" id="regAccPassword" placeholder="At least 6 characters" autocomplete="new-password" required oninput="clearAuthError('regError')"><button type="button" class="password-toggle" onclick="togglePasswordVisibility('regAccPassword', this)" aria-label="Show password" title="Show password"><span class="eye-icon" aria-hidden="true"></span></button></div></div>
-        <p id="regError" style="color:#f87171; font-size:0.75rem; min-height:16px;"></p>
-        <button type="button" class="btn-checkout-act auth-primary-action" style="width:100%; margin-top:10px;" onclick="registerNewBusiness()">Create workspace <span>→</span></button>
-        <button type="button" class="social-button" style="width:100%; margin-top:10px;" onclick="handleGoogleSignIn()">Continue with Google</button>
-      </div>
+      <h1 id="authHeroTitle">Get Started now</h1>
+      <p id="authHeroSub">Sign in to run your counter</p>
     </div>
-  </div>
 
-  <div id="onboardingModal" class="onboarding-backdrop hidden" aria-modal="true" role="dialog">
-    <div class="onboarding-dialog">
-      <div class="onboarding-badge">✓</div>
-      <div class="onboarding-stepper">
-        <span class="step-dot active"></span>
-        <span class="step-dot"></span>
-        <span class="step-dot"></span>
+    <!-- Sheet (bottom) -->
+    <div class="auth-sheet">
+
+      <!-- ---------- STEP 1: choose channel + request OTP ---------- -->
+      <div id="authStepRequest">
+        <div class="auth-seg">
+          <button type="button" class="auth-seg-btn active" id="segPhoneBtn" onclick="setLoginMethod('phone')">Phone</button>
+          <button type="button" class="auth-seg-btn" id="segEmailBtn" onclick="setLoginMethod('email')">Email</button>
+        </div>
+
+        <h2 class="auth-h2" id="authFormTitle">Sign in to your account</h2>
+        <p class="auth-sub" id="authFormSub">Enter your mobile number and we will send you an OTP.</p>
+
+        <!-- Phone -->
+        <div id="panePhone">
+          <div class="phone-row">
+            <button type="button" class="cc-btn" id="ccBtn" onclick="toggleCountryList()">
+              <span id="ccFlag">🇮🇳</span> <span id="ccDial">+91</span> <span class="cc-caret">▾</span>
+            </button>
+            <input type="tel" id="loginPhone" inputmode="numeric" placeholder="Mobile number" autocomplete="tel-national" oninput="onPhoneInput()">
+          </div>
+          <div id="ccList" class="cc-list" style="display:none;"></div>
+          <p class="auth-err" id="phoneError"></p>
+          <button type="button" class="auth-primary" id="phoneOtpBtn" onclick="requestOtp('phone')">Get OTP <span class="ap-ico">→]</span></button>
+        </div>
+
+        <!-- Email -->
+        <div id="paneEmail" style="display:none;">
+          <input type="email" class="auth-field" id="loginEmail" placeholder="Email address" autocomplete="email">
+          <p class="auth-err" id="emailError"></p>
+          <button type="button" class="auth-primary" id="emailOtpBtn" onclick="requestOtp('email')">Get OTP <span class="ap-ico">→]</span></button>
+        </div>
+
+        <p class="auth-switch">New here? <button type="button" class="auth-link" onclick="showRegisterStep()">Register your shop</button></p>
+
+        <div class="auth-or"><span>or</span></div>
+
+        <button type="button" class="auth-google" onclick="signInWithGoogle()">
+          <span class="g-ico">◍</span> Continue with Google
+        </button>
+        <p class="auth-foot">Use the Google account linked to your registered email.</p>
       </div>
-      <h3>Confirm Profile</h3>
-      <p>You can always change this in settings.</p>
-      <div class="form-input"><label>Full Name</label><input type="text" id="onboardingName" placeholder="Alex Morgan"></div>
-      <div class="form-input"><label>Email Address</label><div class="verified-input"><input type="email" id="onboardingEmail" value="name@example.com" readonly><span class="verified-pill">Verified</span></div></div>
-      <div class="form-input"><label>Role / Age Group</label><select id="onboardingRole"><option>Founder / Owner</option><option>Operations Manager</option><option>Finance</option><option>Sales</option></select></div>
-      <button type="button" class="btn-checkout-act auth-primary-action" style="width:100%;" onclick="completeOnboarding()">Continue</button>
+
+      <!-- ---------- STEP 2: OTP entry ---------- -->
+      <div id="authStepOtp" style="display:none;">
+        <h2 class="auth-h2" id="otpTitle">Check your phone</h2>
+        <p class="auth-sub">Enter the 6 digit OTP we've sent to <span class="auth-target" id="otpTargetLabel"></span></p>
+
+        <div class="otp-input-row">
+          <input type="text" inputmode="numeric" maxlength="1" class="otp-box" id="otp-0" oninput="onOtpInput(0)" onkeydown="onOtpKeydown(event,0)" onpaste="onOtpPaste(event)">
+          <input type="text" inputmode="numeric" maxlength="1" class="otp-box" id="otp-1" oninput="onOtpInput(1)" onkeydown="onOtpKeydown(event,1)">
+          <input type="text" inputmode="numeric" maxlength="1" class="otp-box" id="otp-2" oninput="onOtpInput(2)" onkeydown="onOtpKeydown(event,2)">
+          <input type="text" inputmode="numeric" maxlength="1" class="otp-box" id="otp-3" oninput="onOtpInput(3)" onkeydown="onOtpKeydown(event,3)">
+          <input type="text" inputmode="numeric" maxlength="1" class="otp-box" id="otp-4" oninput="onOtpInput(4)" onkeydown="onOtpKeydown(event,4)">
+          <input type="text" inputmode="numeric" maxlength="1" class="otp-box" id="otp-5" oninput="onOtpInput(5)" onkeydown="onOtpKeydown(event,5)">
+        </div>
+
+        <button type="button" class="auth-ghost" onclick="editOtpTarget()">✎ Edit <span id="otpEditNoun">Number</span></button>
+        <p class="auth-err" id="otpError"></p>
+        <button type="button" class="auth-primary" id="otpVerifyBtn" onclick="verifyOtpCode()">Verify OTP <span class="ap-ico">✓</span></button>
+
+        <p class="auth-resend" id="otpResendLine">Resend OTP in <strong id="otpTimer">00:30</strong></p>
+        <div id="otpResendActions" style="display:none;">
+          <p class="auth-sub" style="text-align:center; margin-bottom:8px;">Didn't receive OTP?</p>
+          <button type="button" class="auth-ghost" onclick="resendOtp()">Resend code</button>
+        </div>
+      </div>
+
+      <!-- ---------- STEP 3: register shop ---------- -->
+      <div id="authStepRegister" style="display:none;">
+        <div class="wiz-dots" id="wizDots"></div>
+        <h2 class="auth-h2">Register your shop</h2>
+        <p class="auth-sub">We'll verify your number, then set up your store.</p>
+
+        <label class="auth-lbl">SHOP NAME</label>
+        <input type="text" class="auth-field" id="regShopName" placeholder="Shop name">
+
+        <label class="auth-lbl">OWNER NAME</label>
+        <input type="text" class="auth-field" id="regOwnerName" placeholder="Owner name">
+
+        <label class="auth-lbl">MOBILE NUMBER</label>
+        <div class="phone-row">
+          <button type="button" class="cc-btn" disabled><span>🇮🇳</span> +91</button>
+          <input type="tel" id="regPhone" inputmode="numeric" placeholder="Mobile number">
+        </div>
+
+        <label class="auth-lbl">EMAIL ADDRESS <span class="lbl-opt">(optional)</span></label>
+        <input type="email" class="auth-field" id="regEmail" placeholder="Email address">
+
+        <p class="auth-err" id="regError"></p>
+        <button type="button" class="auth-primary" onclick="submitRegistration()">Continue <span class="ap-ico">→</span></button>
+        <p class="auth-switch">Already registered? <button type="button" class="auth-link" onclick="showRequestStep()">Sign in</button></p>
+      </div>
+
+      <!-- ---------- STEP 4: confirm profile / store setup ---------- -->
+      <div id="authStepProfile" style="display:none;">
+        <div class="wiz-dots" id="wizDots2"></div>
+        <h2 class="auth-h2">Confirm store profile</h2>
+        <p class="auth-sub">You can always change this in Settings.</p>
+
+        <label class="auth-lbl">STORE ADDRESS</label>
+        <input type="text" class="auth-field" id="regAddress" placeholder="Store address">
+
+        <label class="auth-lbl">GSTIN <span class="lbl-opt">(optional)</span></label>
+        <input type="text" class="auth-field" id="regGstin" placeholder="GSTIN" oninput="onRegGstinInput(this.value)">
+        <p class="auth-hint" id="regStateHint"></p>
+
+        <label class="auth-lbl">STATE / PLACE OF SUPPLY</label>
+        <select class="auth-field" id="regState"></select>
+
+        <label class="auth-lbl">INDUSTRY <span class="lbl-req">— locked after setup</span></label>
+        <div class="ind-grid" id="indGrid">
+          <button type="button" class="ind-card" data-ind="Electronics" onclick="pickIndustry('Electronics',this)"><span>📱</span>Electronics<small>IMEI / Serial</small></button>
+          <button type="button" class="ind-card" data-ind="Pharmacy" onclick="pickIndustry('Pharmacy',this)"><span>💊</span>Pharmacy<small>Batch / Expiry</small></button>
+          <button type="button" class="ind-card" data-ind="Jewelry" onclick="pickIndustry('Jewelry',this)"><span>💍</span>Jewelry<small>HUID / Karat</small></button>
+          <button type="button" class="ind-card" data-ind="Grocery" onclick="pickIndustry('Grocery',this)"><span>🛒</span>Grocery<small>Barcode / FMCG</small></button>
+          <button type="button" class="ind-card" data-ind="All" onclick="pickIndustry('All',this)"><span>🏪</span>Universal<small>All features</small></button>
+        </div>
+
+        <p class="auth-err" id="profileError"></p>
+        <button type="button" class="auth-primary" onclick="finishOnboarding()">Launch Terminal <span class="ap-ico">→</span></button>
+      </div>
+
+    </div>
+
+    <div class="auth-trust">
+      <span>&#128274; End-to-end encrypted</span>
+      <span>&#10003; GST compliant</span>
+      <span>&#9737; Works offline</span>
     </div>
   </div>
 
   <!-- UPDATE AVAILABLE BANNER -->
   <div id="updateBanner" class="update-banner hidden">
-    <span>New Billnaw update available.</span>
-    <button type="button" onclick="applyAppUpdate()">Update</button>
+    <span>🔄 A new version of Billnaw is available.</span>
+    <button type="button" onclick="applyAppUpdate()">Update Now</button>
     <button type="button" class="dismiss" onclick="dismissUpdateBanner()">Later</button>
   </div>
 
@@ -163,12 +198,12 @@
       </div>
 
       <nav class="sidebar-nav">
-        <button class="nav-item active" onclick="switchView('dashboard', this)">📊 Dashboard</button>
-        <button class="nav-item" onclick="switchView('pos', this)">🛒 Counter POS</button>
-        <button class="nav-item" onclick="switchView('khata', this)">📖 Parties / Khata</button>
-        <button class="nav-item" onclick="switchView('inventory', this)">📦 Stock Master</button>
-        <button class="nav-item" onclick="switchView('reports', this)">📑 GST Reports</button>
-        <button class="nav-item admin-only" onclick="switchView('settings', this)">⚙️ Settings</button>
+        <button class="nav-item active" onclick="switchView('dashboard', this)"><svg class="ic"><use href="#i-home"/></svg><span>Dashboard</span></button>
+        <button class="nav-item" onclick="switchView('pos', this)"><svg class="ic"><use href="#i-cart"/></svg><span>Counter POS</span></button>
+        <button class="nav-item" onclick="switchView('khata', this)"><svg class="ic"><use href="#i-users"/></svg><span>Parties / Khata</span></button>
+        <button class="nav-item" onclick="switchView('inventory', this)"><svg class="ic"><use href="#i-box"/></svg><span>Stock Master</span></button>
+        <button class="nav-item" onclick="switchView('reports', this)"><svg class="ic"><use href="#i-chart"/></svg><span>GST Reports</span></button>
+        <button class="nav-item admin-only" onclick="switchView('settings', this)"><svg class="ic"><use href="#i-gear"/></svg><span>Settings</span></button>
       </nav>
     </aside>
 
@@ -198,23 +233,23 @@
       <!-- 1. DASHBOARD VIEW -->
       <section id="view-dashboard" class="view-container active">
         <div class="dash-kpi-ribbon">
-          <div class="kpi-stat-card total">
-            <div class="info-side"><h4>Total Orders</h4><div class="count" id="dashTotalOrders">0</div><div class="amount" id="dashTotalSalesVal">₹0.00</div></div>
+          <div class="kpi-stat-card total" role="button" tabindex="0" onclick="drillDashboardCard('all')" onkeydown="if(event.key==='Enter')drillDashboardCard('all')">
+            <div class="info-side"><h4>Total Orders <span class="kpi-delta flat" id="deltaOrders" style="display:none;"></span></h4><div class="count" id="dashTotalOrders">0</div><div class="amount" id="dashTotalSalesVal">₹0.00 <span class="kpi-delta flat" id="deltaRevenue" style="display:none;"></span></div></div>
             <div class="badge-icon">🛍️</div>
           </div>
-          <div class="kpi-stat-card pending">
+          <div class="kpi-stat-card pending" role="button" tabindex="0" onclick="drillDashboardCard('khata')" onkeydown="if(event.key==='Enter')drillDashboardCard('khata')">
             <div class="info-side"><h4>Pending Orders</h4><div class="count" id="dashPendingOrders">0</div><div class="amount" id="dashPendingSalesVal">₹0.00</div></div>
             <div class="badge-icon">⏳</div>
           </div>
-          <div class="kpi-stat-card confirmed">
+          <div class="kpi-stat-card confirmed" role="button" tabindex="0" onclick="drillDashboardCard('paid')" onkeydown="if(event.key==='Enter')drillDashboardCard('paid')">
             <div class="info-side"><h4>Confirmed Sales</h4><div class="count" id="dashConfirmedOrders">0</div><div class="amount" id="dashConfirmedSalesVal">₹0.00</div></div>
             <div class="badge-icon">✅</div>
           </div>
-          <div class="kpi-stat-card shipped">
+          <div class="kpi-stat-card shipped" role="button" tabindex="0" onclick="drillDashboardCard('paid')" onkeydown="if(event.key==='Enter')drillDashboardCard('paid')">
             <div class="info-side"><h4>Delivered / Paid</h4><div class="count" id="dashShippedOrders">0</div><div class="amount" id="dashShippedSalesVal">₹0.00</div></div>
             <div class="badge-icon">🚚</div>
           </div>
-          <div class="kpi-stat-card cancelled">
+          <div class="kpi-stat-card cancelled" role="button" tabindex="0" onclick="drillDashboardCard('due')" onkeydown="if(event.key==='Enter')drillDashboardCard('due')">
             <div class="info-side"><h4>Credit Due (Khata)</h4><div class="count" id="dashDueCount">0</div><div class="amount" id="dashDueSalesVal">₹0.00</div></div>
             <div class="badge-icon">❌</div>
           </div>
@@ -441,16 +476,23 @@
           <div style="background:#fff; border:1px solid var(--border); border-radius:var(--radius-lg); padding:18px; display:flex; flex-direction:column; gap:14px;">
             <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
               <button class="btn-pill secondary" onclick="closeReportDetail()">← Back to Reports</button>
-              <h3 id="drillReportTitle" style="font-size:1.05rem; font-weight:800; color:var(--forest-dark);">Report Details</h3>
-              <div style="display:flex; gap:8px;">
-                <button class="btn-pill secondary" onclick="exportCurrentReportCSV()">📊 Excel Download</button>
-                <button class="btn-pill primary" onclick="printReportDocument()">🖨️ Print Document</button>
+              <div style="flex:1; min-width:180px;">
+                <h3 id="drillReportTitle" style="font-size:1.05rem; font-weight:800; color:var(--text-dark);">Report Details</h3>
+                <p id="drillFilterLabel" style="font-size:0.76rem; color:var(--text-muted); margin-top:2px;"></p>
+              </div>
+              <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                <button class="btn-pill secondary" onclick="exportCurrentViewToExcel()">Excel</button>
+                <button class="btn-pill secondary" onclick="exportCurrentReportCSV()">CSV</button>
+                <button class="btn-pill primary" onclick="printReportDocument()">Print</button>
               </div>
             </div>
 
-            <div id="cust360SelectorWrap" style="display:none;" class="form-input">
-              <label>Select Customer Profile to Inspect</label>
-              <select id="cust360Dropdown" onchange="renderCustomer360Profile(this.value)"></select>
+            <div id="cust360SelectorWrap" style="display:none;">
+              <div class="form-input">
+                <label>Select Customer Profile to Inspect</label>
+                <select id="cust360Dropdown" onchange="renderCustomer360Profile(this.value)"></select>
+              </div>
+              <button class="btn-pill secondary" style="margin-top:8px;" onclick="exportCustomer360()">Export this party's full purchase history (Excel)</button>
             </div>
 
             <div id="cust360HeaderStats" style="display:none;" class="cust-360-header">
@@ -472,135 +514,305 @@
 
       <!-- 6. SETTINGS VIEW (4-TAB STUDIO) -->
       <section id="view-settings" class="view-container admin-only">
-        <div class="settings-studio-header">
-          <div>
-            <h2>Business &amp; Hardware Settings</h2>
-            <p style="font-size:0.78rem; color:var(--text-muted);">Manage profile, customize invoices, connect Bluetooth printers &amp; lock industry</p>
+
+        <!-- ================= SETTINGS HOME — vertical card list ================= -->
+        <div id="settingsHome">
+          <div class="section-head">
+            <h2>Settings</h2>
+            <p>Configure your store, hardware, staff, and billing preferences</p>
           </div>
-          <button class="btn-checkout-act" style="padding:10px 24px;" onclick="saveAllSettings()">💾 Save Changes</button>
+
+          <div class="settings-card-list">
+            <button class="settings-card" onclick="openSettingsPanel('profile')">
+              <span class="sc-ico"><svg class="ic lg"><use href="#i-home"/></svg></span>
+              <span class="sc-body">
+                <strong>Store Profile</strong>
+                <small>Business name, GSTIN, address, contact details</small>
+              </span>
+              <span class="sc-chev">›</span>
+            </button>
+
+            <button class="settings-card" onclick="openSettingsPanel('gst')">
+              <span class="sc-ico"><svg class="ic lg"><use href="#i-doc"/></svg></span>
+              <span class="sc-body">
+                <strong>GST &amp; Tax Rates</strong>
+                <small>Rate slabs, default HSN, mandatory-field rules</small>
+              </span>
+              <span class="sc-chev">›</span>
+            </button>
+
+            <button class="settings-card" onclick="openSettingsPanel('hardware')">
+              <span class="sc-ico"><svg class="ic lg"><use href="#i-scan"/></svg></span>
+              <span class="sc-body">
+                <strong>Hardware &amp; Print</strong>
+                <small>Thermal/A4 printer, cash drawer, bank &amp; UPI on receipt</small>
+              </span>
+              <span class="sc-chev">›</span>
+            </button>
+
+            <button class="settings-card" onclick="openSettingsPanel('industry')">
+              <span class="sc-ico"><svg class="ic lg"><use href="#i-box"/></svg></span>
+              <span class="sc-body">
+                <strong>Industry Vertical</strong>
+                <small>Locked category, IMEI/batch/HUID tracking rules</small>
+              </span>
+              <span class="sc-chev">›</span>
+            </button>
+
+            <button class="settings-card" onclick="openSettingsPanel('staff')">
+              <span class="sc-ico"><svg class="ic lg"><use href="#i-users"/></svg></span>
+              <span class="sc-body">
+                <strong>Staff &amp; Roles</strong>
+                <small>Who has access, and what they can see</small>
+              </span>
+              <span class="sc-chev">›</span>
+            </button>
+          </div>
         </div>
 
-        <div class="settings-nav-tabs">
-          <button class="set-tab-btn active" id="stab-profile" onclick="switchSettingsTab('profile')">👤 Store Profile</button>
-          <button class="set-tab-btn" id="stab-invoice" onclick="switchSettingsTab('invoice')">🧾 Invoice Studio</button>
-          <button class="set-tab-btn" id="stab-printer" onclick="switchSettingsTab('printer')">🖨️ Printer Hardware</button>
-        </div>
+        <!-- ================= OVERLAY PANELS ================= -->
+        <!-- Backdrop click closes whichever panel is open — this is the "click
+             outside to go back" behaviour, on both desktop (panel slides in
+             from the right over a dimmed backdrop) and mobile (panel is a
+             full-screen sheet; backdrop is effectively the sliver behind it,
+             plus a Back arrow for reliable discoverability — outside-click-only
+             navigation is genuinely hard to find on a phone with no visible
+             "outside"). Esc key does the same. -->
+        <div class="settings-panel-backdrop" id="settingsPanelBackdrop" onclick="closeSettingsPanel()"></div>
 
-        <!-- TAB 1: PROFILE -->
-        <div class="settings-tab-pane active" id="setpane-profile">
-          <div style="background:#fff; padding:20px; border-radius:var(--radius-md); border:1px solid var(--border); display:flex; flex-direction:column; gap:12px; max-width:650px;">
+        <!-- ---- Store Profile ---- -->
+        <div class="settings-panel" id="panel-profile">
+          <div class="settings-panel-head">
+            <button class="sp-back" onclick="closeSettingsPanel()" aria-label="Back">‹</button>
+            <h3>Store Profile</h3>
+          </div>
+          <div class="settings-panel-body">
             <div class="form-input"><label>Trade / Shop Name *</label><input type="text" id="cfgName" oninput="updateLivePreview()"></div>
             <div class="form-input"><label>GSTIN Number</label><input type="text" id="cfgGst" oninput="updateLivePreview()"></div>
             <div class="form-input"><label>Contact Phone Number *</label><input type="tel" id="cfgPhone" oninput="updateLivePreview()"></div>
             <div class="form-input"><label>Store Address *</label><input type="text" id="cfgAddress" oninput="updateLivePreview()"></div>
-            <div class="form-input"><label>Owner Security PIN (4-Digits)</label><input type="password" id="cfgOwnerPin" maxlength="4"></div>
-            <div class="form-input"><label>Staff PIN (4-Digits)</label><input type="password" id="cfgStaffPin" maxlength="4"></div>
+          </div>
+          <div class="settings-panel-foot">
+            <button class="btn-checkout-act" onclick="saveAllSettings()">Save Changes</button>
           </div>
         </div>
 
-        <!-- TAB 2: INVOICE STUDIO -->
-        <div class="settings-tab-pane" id="setpane-invoice">
-          <div class="invoice-studio-layout">
-            <div class="invoice-live-preview-box">
-              <div class="preview-tag">LIVE PREVIEW</div>
-              <div class="preview-sheet">
-                <div class="pv-header">
-                  <div class="pv-brand">
-                    <h3 id="pvShopName">Om Betar Bhawan</h3>
-                    <p id="pvAddress">Store Address</p>
-                    <p>GSTIN: <strong id="pvGst">19ABCDE1234F1Z5</strong> &bull; Mob: <span id="pvPhone">9876543210</span></p>
-                  </div>
-                  <div class="pv-meta">
-                    <h4 id="pvDocTitle">TAX INVOICE</h4>
-                    <p>Inv #: <strong>INV-1001</strong></p>
-                  </div>
-                </div>
-                <table class="pv-table">
-                  <thead>
-                    <tr><th>#</th><th>Item</th><th id="pvThHsn">HSN</th><th id="pvThBatch">Identifier</th><th>Qty</th><th>Total</th></tr>
-                  </thead>
-                  <tbody>
-                    <tr><td>1</td><td>Sample Product</td><td class="pvTdHsn">8517</td><td class="pvTdBatch">SN-98214</td><td>1</td><td>₹1,200.00</td></tr>
-                  </tbody>
-                </table>
-                <div class="pv-bottom-grid">
-                  <div class="pv-bank">
-                    <p id="pvBankInfo">SBI • A/C: 38472910481</p>
-                    <p id="pvUpiInfo">UPI: ombetar@sbi</p>
-                  </div>
-                  <div class="pv-totals">
-                    <p class="pv-grand">Total: <strong>₹1,416.00</strong></p>
-                  </div>
-                </div>
+        <!-- ---- GST & Tax Rates ---- -->
+        <div class="settings-panel" id="panel-gst">
+          <div class="settings-panel-head">
+            <button class="sp-back" onclick="closeSettingsPanel()" aria-label="Back">‹</button>
+            <h3>GST &amp; Tax Rates</h3>
+          </div>
+          <div class="settings-panel-body">
+            <div class="settings-block">
+              <h4>Rate Slabs</h4>
+              <p class="settings-hint">
+                Comma-separated. Update these if slabs change in a budget —
+                already-issued invoices keep the rate they were billed at and
+                are never recalculated.
+              </p>
+              <div class="form-input">
+                <input type="text" id="cfgGstSlabs" placeholder="0, 0.25, 3, 5, 12, 18, 28">
+              </div>
+              <button type="button" class="btn-pill secondary" onclick="saveGstSlabs()">Save GST Slabs</button>
+              <p id="gstSlabStatus" style="font-size:0.75rem; margin:6px 0 0;"></p>
+            </div>
+
+            <div class="settings-block">
+              <h4>Defaults for New Products</h4>
+              <div class="form-input">
+                <label>Default GST Rate</label>
+                <select id="cfgDefaultGst" data-gst-rate-select onchange="saveComplianceSettings()"></select>
+              </div>
+              <div class="form-input">
+                <label>Default HSN / SAC Code</label>
+                <input type="text" id="cfgDefaultHsn" placeholder="8517" oninput="saveComplianceSettings()">
               </div>
             </div>
 
-            <div class="invoice-controls-accordion">
-              <div class="accordion-item open" id="acc-details">
-                <div class="accordion-head" onclick="toggleAccordion('acc-details')"><span>Industry Lock &amp; Policies</span><span class="chevron">▾</span></div>
-                <div class="accordion-body">
-                  <div class="form-input">
-                    <label>Assigned Industry Vertical (Strict Lockdown)</label>
-                    <select id="cfgIndustrySelect" onchange="updateLivePreview()">
-                      <option value="All">All Verticals (Universal Mode)</option>
-                      <option value="Electronics">Electronics (IMEI / Serial Lock)</option>
-                      <option value="Pharmacy">Pharmacy (Batch / Expiry Lock)</option>
-                      <option value="Jewelry">Jewelry (HUID / Karat Lock)</option>
-                      <option value="Grocery">Grocery (FMCG / EAN Lock)</option>
-                    </select>
-                  </div>
-                  <div class="form-input"><label>Bank Name</label><input type="text" id="cfgBankName" value="State Bank of India" oninput="updateLivePreview()"></div>
-                  <div class="form-input"><label>Account Number</label><input type="text" id="cfgBankAcc" value="38472910481" oninput="updateLivePreview()"></div>
-                  <div class="form-input"><label>UPI ID (For Dynamic QR)</label><input type="text" id="cfgUpiId" value="ombetar@sbi" oninput="updateLivePreview()"></div>
-                  <div class="form-input"><label>Terms &amp; Conditions</label><textarea id="cfgTerms" rows="3" oninput="updateLivePreview()">1. Goods once sold will not be taken back.&#10;2. Warranty as per policy.</textarea></div>
-                </div>
-              </div>
+            <div class="settings-block">
+              <h4>Billing Rules</h4>
+              <label class="settings-toggle-row">
+                <span>
+                  <strong>Mandatory HSN on All Items</strong>
+                  <small>Block checkout if any cart line is missing an HSN/SAC code</small>
+                </span>
+                <input type="checkbox" id="cfgMandatoryHsn" onchange="saveComplianceSettings()">
+              </label>
+              <label class="settings-toggle-row">
+                <span>
+                  <strong>Show Round-Off Line on Invoice</strong>
+                  <small>Print the rounding adjustment separately instead of folding it in silently</small>
+                </span>
+                <input type="checkbox" id="cfgShowRoundOff" checked onchange="saveComplianceSettings()">
+              </label>
             </div>
           </div>
         </div>
 
-        <!-- TAB 3: PRINTERS -->
-        <div class="settings-tab-pane" id="setpane-printer">
-          <div style="background:#fff; padding:20px; border-radius:var(--radius-md); border:1px solid var(--border); display:flex; flex-direction:column; gap:12px; max-width:650px;">
-            <div class="form-input">
-              <label>Primary Output Device</label>
-              <select id="cfgPrinterFormat" onchange="onPrinterFormatChange()">
-                <option value="a4">A4 / Letter — Office printer or PDF (wired, Wi-Fi or system driver)</option>
-                <option value="thermal">Bluetooth Thermal 58mm / 80mm (ESC/POS)</option>
-                <option value="usb_thermal">USB / Wired Thermal (via system print dialog)</option>
-                <option value="dotmatrix">Dot Matrix — 9.5" continuous stationery</option>
-              </select>
-            </div>
-            <div class="form-input" id="thermalWidthRow">
-              <label>Thermal Paper Roll Width</label>
-              <select id="cfgThermalWidth">
-                <option value="80">80mm Roll</option>
-                <option value="58">58mm Roll</option>
-              </select>
-            </div>
-            <p style="font-size:0.72rem; color:#8fa59c; margin:0;">
-              <strong>Bluetooth Thermal</strong> talks directly to the printer (fastest, no dialog).
-              <strong>USB/Wired Thermal</strong> and <strong>Dot Matrix</strong> route through your
-              system print dialog — pick the right printer there once and your OS remembers it.
-            </p>
-            <div style="display:flex; gap:8px; margin-top:10px; align-items:center;">
-              <button type="button" class="btn-pill primary" onclick="PrinterEngine.connectThermalPrinter()">🔗 Pair Bluetooth Printer</button>
-              <button type="button" class="btn-pill secondary" onclick="PrinterEngine.runPrinterDiagnosticTest()">⚡ Test Print Receipt</button>
-            </div>
-            <p id="printerStatusLine" style="font-size:0.8rem; margin-top:4px; color:var(--text-muted);">● Not connected — sales will print via A4/PDF dialog until paired.</p>
-            <p style="font-size:0.72rem; color:#8fa59c;">Web Bluetooth requires Chrome on Android or Desktop. Not supported on iPhone/Safari — use A4 mode there.</p>
+        <!-- ---- Hardware & Print ---- -->
+        <div class="settings-panel" id="panel-hardware">
+          <div class="settings-panel-head">
+            <button class="sp-back" onclick="closeSettingsPanel()" aria-label="Back">‹</button>
+            <h3>Hardware &amp; Print</h3>
+          </div>
+          <div class="settings-panel-body">
 
-            <hr style="border:0; border-top:1px solid var(--border); margin:16px 0;">
-            <h4 style="margin:0 0 6px; font-size:0.9rem;">GST Rate Slabs</h4>
-            <p style="font-size:0.72rem; color:#8fa59c; margin:0 0 8px;">
-              Comma-separated. Update these if slabs change in a budget — already-issued
-              invoices keep the rate they were billed at and are never recalculated.
-            </p>
-            <div class="form-input">
-              <input type="text" id="cfgGstSlabs" placeholder="0, 0.25, 3, 5, 12, 18, 28">
+            <div class="settings-block">
+              <h4>Receipt Printer</h4>
+              <div class="form-input">
+                <label>Primary Output Device</label>
+                <select id="cfgPrinterFormat" onchange="onPrinterFormatChange()">
+                  <option value="a4">A4 / Letter — Office printer or PDF</option>
+                  <option value="thermal">Bluetooth Thermal 58mm / 80mm (ESC/POS)</option>
+                  <option value="usb_thermal">USB / Wired Thermal (system print dialog)</option>
+                  <option value="dotmatrix">Dot Matrix — 9.5" continuous stationery</option>
+                </select>
+              </div>
+              <div class="form-input" id="thermalWidthRow">
+                <label>Thermal Paper Roll Width</label>
+                <select id="cfgThermalWidth" onchange="savePrinterSettings()">
+                  <option value="80">80mm Roll</option>
+                  <option value="58">58mm Roll</option>
+                </select>
+              </div>
+              <p class="settings-hint">
+                <strong>Bluetooth Thermal</strong> talks directly to the printer (fastest, no dialog).
+                <strong>USB/Wired Thermal</strong> and <strong>Dot Matrix</strong> route through your
+                system print dialog — pick the printer there once and your OS remembers it.
+              </p>
+              <div style="display:flex; gap:8px; margin:10px 0; flex-wrap:wrap;">
+                <button type="button" class="btn-pill primary" onclick="PrinterEngine.connectThermalPrinter()">Pair Bluetooth Printer</button>
+                <button type="button" class="btn-pill secondary" onclick="PrinterEngine.runPrinterDiagnosticTest()">Test Print Receipt</button>
+              </div>
+              <p id="printerStatusLine" class="settings-hint" style="margin-top:2px;">● Not connected — sales will print via A4/PDF dialog until paired.</p>
+              <p class="settings-hint">Web Bluetooth requires Chrome on Android or Desktop. Not supported on iPhone/Safari — use A4 mode there.</p>
             </div>
-            <button type="button" class="btn-pill secondary" style="align-self:flex-start;" onclick="saveGstSlabs()">Save GST Slabs</button>
-            <p id="gstSlabStatus" style="font-size:0.75rem; margin:4px 0 0;"></p>
+
+            <div class="settings-block">
+              <h4>Receipt &amp; Print Behaviour</h4>
+              <div class="form-input">
+                <label>Auto Paper Cut</label>
+                <select id="cfgCutType" onchange="savePrinterSettings()">
+                  <option value="partial">Partial cut (leaves a tab)</option>
+                  <option value="full">Full cut</option>
+                  <option value="none">No cut — feed only</option>
+                </select>
+              </div>
+              <div class="form-input">
+                <label>Cash Drawer</label>
+                <select id="cfgCashDrawer" onchange="savePrinterSettings()">
+                  <option value="off">Do not open drawer</option>
+                  <option value="pin2">Open on cash sales — Pin 2 (most drawers)</option>
+                  <option value="pin5">Open on cash sales — Pin 5</option>
+                </select>
+              </div>
+              <p class="settings-hint">
+                The drawer only pops on <strong>Cash</strong> tenders. Opening it on UPI or card
+                sales is a shrinkage risk and startles staff.
+              </p>
+              <button type="button" class="btn-pill secondary" onclick="PrinterEngine.openCashDrawer()">Test Drawer Pulse</button>
+            </div>
+
+            <div class="settings-block">
+              <h4>Bank &amp; UPI (prints on every invoice)</h4>
+              <div class="form-input"><label>Bank Name</label><input type="text" id="cfgBankName" oninput="updateLivePreview()"></div>
+              <div class="form-input"><label>Account Number</label><input type="text" id="cfgBankAcc" oninput="updateLivePreview()"></div>
+              <div class="form-input"><label>UPI ID (powers the scan-to-pay QR)</label><input type="text" id="cfgUpiId" placeholder="yourshop@okaxis" oninput="updateLivePreview()"></div>
+              <div class="form-input"><label>Invoice Terms &amp; Conditions</label><textarea id="cfgTerms" rows="3" oninput="updateLivePreview()"></textarea></div>
+            </div>
+
+            <div class="settings-block">
+              <h4>Live Preview</h4>
+              <div class="invoice-live-preview-box" style="margin:0;">
+                <div class="preview-sheet">
+                  <div class="pv-header">
+                    <div class="pv-brand">
+                      <h3 id="pvShopName">Your Shop Name</h3>
+                      <p id="pvAddress">Store Address</p>
+                      <p>GSTIN: <strong id="pvGst">—</strong> &bull; Mob: <span id="pvPhone">—</span></p>
+                    </div>
+                    <div class="pv-meta">
+                      <h4 id="pvDocTitle">TAX INVOICE</h4>
+                      <p>Inv #: <strong>INV-1001</strong></p>
+                    </div>
+                  </div>
+                  <table class="pv-table">
+                    <thead><tr><th>#</th><th>Item</th><th id="pvThHsn">HSN</th><th id="pvThBatch">Identifier</th><th>Qty</th><th>Total</th></tr></thead>
+                    <tbody><tr><td>1</td><td>Sample Product</td><td class="pvTdHsn">8517</td><td class="pvTdBatch">SN-98214</td><td>1</td><td>₹1,200.00</td></tr></tbody>
+                  </table>
+                  <div class="pv-bottom-grid">
+                    <div class="pv-bank">
+                      <p id="pvBankInfo">Bank • A/C</p>
+                      <p id="pvUpiInfo">UPI: —</p>
+                    </div>
+                    <div class="pv-totals"><p class="pv-grand">Total: <strong>₹1,416.00</strong></p></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="settings-panel-foot">
+            <button class="btn-checkout-act" onclick="saveAllSettings()">Save Changes</button>
+          </div>
+        </div>
+
+        <!-- ---- Industry Vertical ---- -->
+        <div class="settings-panel" id="panel-industry">
+          <div class="settings-panel-head">
+            <button class="sp-back" onclick="closeSettingsPanel()" aria-label="Back">‹</button>
+            <h3>Industry Vertical</h3>
+          </div>
+          <div class="settings-panel-body">
+            <div class="settings-block" id="industryLockBanner">
+              <div style="display:flex; align-items:center; gap:10px; margin-bottom:6px;">
+                <strong id="industryLockName">Universal Mode</strong>
+                <span class="pill" id="industryLockPill" style="display:none;">Locked</span>
+              </div>
+              <p class="settings-hint" id="industryLockDesc">This shop is not locked to a specific vertical.</p>
+            </div>
+
+            <div class="settings-block" id="industryToggleBlock">
+              <h4>Tracking Rules</h4>
+              <label class="settings-toggle-row">
+                <span>
+                  <strong>Require Identifier for This Vertical's Items</strong>
+                  <small id="requireIdLabel">Block checkout if a trackable item has no IMEI/HUID/batch assigned</small>
+                </span>
+                <input type="checkbox" id="cfgRequireIdentifier" onchange="saveIndustrySettings()">
+              </label>
+              <p class="settings-hint">
+                This only applies to items in your locked category's tracked list — untracked
+                accessories and consumables are never blocked.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <!-- ---- Staff & Roles ---- -->
+        <div class="settings-panel" id="panel-staff">
+          <div class="settings-panel-head">
+            <button class="sp-back" onclick="closeSettingsPanel()" aria-label="Back">‹</button>
+            <h3>Staff &amp; Roles</h3>
+          </div>
+          <div class="settings-panel-body">
+            <div class="settings-block">
+              <p class="settings-hint" style="margin-bottom:12px;">
+                Cashier accounts never see wholesale cost, margins, or profit reports —
+                enforced by the database, not just hidden in this screen.
+              </p>
+              <table class="data-table" id="staffTable">
+                <thead><tr><th>Name</th><th>Role</th><th>Cost Visibility</th></tr></thead>
+                <tbody id="staffTableBody">
+                  <tr><td colspan="3" style="text-align:center; color:var(--text-muted);">Loading…</td></tr>
+                </tbody>
+              </table>
+              <p class="settings-hint" style="margin-top:14px;">
+                Adding staff requires them to complete their own OTP sign-in and be linked to
+                this shop — that flow isn't wired up in this screen yet. Ask Claude to build it
+                when you need it.
+              </p>
+            </div>
           </div>
         </div>
 
@@ -610,13 +822,93 @@
 
     <!-- MOBILE BOTTOM NAVIGATION -->
     <nav class="mobile-bottom-nav">
-      <button class="mob-nav-item active" onclick="switchView('dashboard', this)"><span>📊</span> Home</button>
-      <button class="mob-nav-item" onclick="switchView('pos', this)"><span>🛒</span> POS</button>
-      <button class="mob-nav-fab" onclick="switchView('pos')">+</button>
-      <button class="mob-nav-item" onclick="switchView('reports', this)"><span>📑</span> Reports</button>
-      <button class="mob-nav-item admin-only" onclick="switchView('settings', this)"><span>⚙️</span> Settings</button>
+      <button class="mob-nav-item active" onclick="switchView('dashboard', this)">
+        <svg class="ic"><use href="#i-home"/></svg><span>Home</span>
+      </button>
+      <button class="mob-nav-item" onclick="openInwardPurchaseModal()">
+        <svg class="ic"><use href="#i-truck"/></svg><span>Purchase</span>
+      </button>
+
+      <!-- Centre action: "New Sale" — the single most frequent action on a
+           counter gets the thumb-friendliest spot and the only filled
+           button, so it's findable without looking. -->
+      <button class="mob-nav-fab" onclick="switchView('pos')" aria-label="New Sale">
+        <svg class="ic lg" style="stroke:#fff;"><use href="#i-cart"/></svg>
+      </button>
+
+      <button class="mob-nav-item" onclick="switchView('reports', this)">
+        <svg class="ic"><use href="#i-chart"/></svg><span>Reports</span>
+      </button>
+      <button class="mob-nav-item admin-only" onclick="openSettingsHome()">
+        <svg class="ic"><use href="#i-gear"/></svg><span>Settings</span>
+      </button>
     </nav>
 
+  </div>
+
+  <!-- SALES RETURN / CREDIT NOTE MODAL -->
+  <div class="modal-backdrop" id="returnModal">
+    <div class="modal-window large">
+      <div class="modal-header">
+        <h4>Sales Return · Credit Note</h4>
+        <button onclick="closeReturnModal()" style="background:none; border:none; font-size:1.2rem; cursor:pointer; color:var(--text-muted);">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="settings-block" style="margin-bottom:14px;">
+          <div style="display:flex; flex-wrap:wrap; gap:18px; font-size:0.85rem;">
+            <span>Invoice: <strong id="retInvoiceNo">—</strong></span>
+            <span>Party: <strong id="retCustomer">—</strong></span>
+            <span>Tax: <strong id="retTaxMode">—</strong></span>
+          </div>
+          <p class="settings-hint">
+            The original invoice is never deleted — GST requires it to stay on record.
+            A credit note is issued against it and its status updates automatically.
+          </p>
+        </div>
+
+        <div style="overflow-x:auto;">
+          <table class="data-table">
+            <thead><tr>
+              <th>Item</th>
+              <th style="text-align:center;">Sold</th>
+              <th style="text-align:center;">Returnable</th>
+              <th style="text-align:center;">Return Qty</th>
+              <th style="text-align:right;">Rate</th>
+            </tr></thead>
+            <tbody id="retLinesBody"></tbody>
+          </table>
+        </div>
+
+        <div class="settings-block" style="margin-top:14px;">
+          <label class="settings-toggle-row" style="border:none; padding-top:0;">
+            <span>
+              <strong>Restock returned items</strong>
+              <small>Turn off for damaged goods — the customer is still credited, but the unit does not re-enter sellable stock</small>
+            </span>
+            <input type="checkbox" id="retRestock" checked>
+          </label>
+          <div class="form-input">
+            <label>Reason (optional)</label>
+            <input type="text" id="retReason" placeholder="e.g. Wrong size, defective unit, customer changed mind">
+          </div>
+        </div>
+
+        <div class="settings-block" style="margin-top:14px;">
+          <div style="display:flex; justify-content:space-between; font-size:0.88rem; padding:3px 0;">
+            <span>Taxable value reversed</span><strong id="retTaxable">₹0.00</strong>
+          </div>
+          <div style="display:flex; justify-content:space-between; font-size:0.88rem; padding:3px 0;">
+            <span>GST reversed</span><strong id="retGst">₹0.00</strong>
+          </div>
+          <p id="retGstSplit" class="settings-hint" style="margin:0;"></p>
+          <div style="display:flex; justify-content:space-between; font-size:1.05rem; font-weight:800; border-top:1px solid var(--border); padding-top:8px; margin-top:6px;">
+            <span>Credit Note Total</span><span id="retTotal">₹0.00</span>
+          </div>
+        </div>
+
+        <button class="btn-checkout-act" id="retSubmitBtn" style="width:100%; margin-top:16px;" onclick="submitReturn()" disabled>Process Return</button>
+      </div>
+    </div>
   </div>
 
   <!-- CAMERA BARCODE / QR SCANNER MODAL -->
@@ -631,7 +923,27 @@
           <video id="scannerVideo" playsinline></video>
           <div class="scanner-laser"></div>
         </div>
-        <p style="font-size:0.75rem; color:var(--text-muted); margin-top:8px;">Align Barcode, IMEI, HUID or Drug Batch inside the camera frame</p>
+        <p id="scannerStatus" style="font-size:0.8rem; color:var(--text-muted); margin-top:8px;">Align Barcode, IMEI, HUID or Drug Batch inside the camera frame</p>
+
+        <label style="display:flex; align-items:center; justify-content:center; gap:8px; font-size:0.8rem; margin-top:6px; cursor:pointer;">
+          <input type="checkbox" id="scanContinuousChk" onchange="toggleScanContinuous(this)">
+          Continuous mode — keep scanning a whole basket
+        </label>
+
+        <!-- Shown when BarcodeDetector is unavailable (iOS Safari, Firefox)
+             or camera permission was refused. Always gives a way forward. -->
+        <div id="scannerFallback" style="display:none; margin-top:14px; text-align:left;">
+          <p style="font-size:0.78rem; color:var(--danger); margin:0 0 8px;">
+            Live camera scanning isn't available here. Use a USB/Bluetooth barcode gun,
+            or type the code below.
+          </p>
+          <div style="display:flex; gap:8px;">
+            <input type="text" id="scannerManualCode" placeholder="Type or scan code"
+                   style="flex:1; padding:12px; border:1.5px solid var(--border); border-radius:10px;"
+                   onkeydown="if(event.key==='Enter') submitManualScan()">
+            <button type="button" class="btn-pill primary" onclick="submitManualScan()">Add</button>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -650,6 +962,18 @@
         </div>
 
         <div id="inwardManualView">
+          <div class="form-input" style="margin-bottom:10px;">
+            <label>Restock an existing product</label>
+            <input type="hidden" id="purExistingItemId">
+            <select id="purExistingItem" onchange="prefillFromExistingItem(this.value)">
+              <option value="">— New product / enter manually below —</option>
+            </select>
+            <p style="font-size:0.72rem; color:var(--text-muted); margin-top:5px;">
+              Pick a product you already stock and its name, HSN, GST rate and prices fill in
+              automatically — you only add the new quantity and the new serials/IMEI/batch numbers.
+            </p>
+            <p id="restockNotice" style="display:none; font-size:0.76rem; color:var(--brand-ink); background:var(--brand-soft); padding:9px 11px; border-radius:9px; margin-top:7px;"></p>
+          </div>
           <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
             <div class="form-input"><label>Supplier Name</label><input type="text" id="purVendor" placeholder="Vendor Name"></div>
             <div class="form-input"><label>Purchase Bill No</label><input type="text" id="purBillNo" placeholder="INV-9921"></div>
@@ -666,7 +990,7 @@
             <div class="form-input"><label>HSN Code</label><input type="text" id="purHsn" value="8517"></div>
             <div class="form-input"><label>GST %</label><input type="number" id="purGst" value="18"></div>
             <div class="form-input"><label>Quantity Inward *</label><input type="number" id="purQty" value="1"></div>
-            <div class="form-input"><label>Purchase Cost (₹)</label><input type="number" id="purCost" placeholder="15000"></div>
+            <div class="form-input cost-sensitive"><label>Purchase Cost (₹)</label><input type="number" id="purCost" placeholder="15000"></div>
             <div class="form-input"><label>Selling Price (₹)</label><input type="number" id="purPrice" placeholder="18999"></div>
             <div class="form-input" style="grid-column: span 2;">
               <label>Serial Numbers / IMEIs / HUIDs / Batches (Comma Separated)</label>
@@ -806,6 +1130,8 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="vendor/qrcode.js"></script>
+  <script src="vendor/qrcode_UTF8.js"></script>
   <script src="gstConfig.js"></script>
   <script src="supabaseClient.js"></script>
   <script src="app.js"></script>
