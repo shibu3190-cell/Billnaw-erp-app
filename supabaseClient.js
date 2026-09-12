@@ -206,6 +206,13 @@ const SB = {
     return { data, error: error?.message };
   },
 
+  async nextInvoiceNumber(shopId, prefix = 'INV') {
+    const { data, error } = await _sb.rpc('next_invoice_number', {
+      p_shop_id: shopId, p_prefix: prefix
+    });
+    return { data, error: error?.message };
+  },
+
   async fetchSales(shopId, limit = 200) {
     const { data, error } = await _sb.rpc('fetch_sales_for_role', { p_shop_id: shopId, p_limit: limit });
     return { data: data || [], error: error?.message };
@@ -216,6 +223,49 @@ const SB = {
     const { data, error } = await _sb.rpc('shop_profit_summary', {
       p_shop_id: shopId, p_from: from || null, p_to: to || null
     });
+    return { data, error: error?.message };
+  },
+
+  /* ---------------- PURCHASES / VENDORS ---------------- */
+
+  async savePurchase(shopId, purchase) {
+    const { data, error } = await _sb.rpc('create_purchase_atomic', {
+      p_shop_id: shopId,
+      p_purchase: {
+        idempotency_key: purchase.idempotency_key,
+        vendor: purchase.vendor || {},
+        bill_no: purchase.billNo || '',
+        bill_date: purchase.billDate || '',
+        taxable: purchase.taxable || 0,
+        gst_total: purchase.gstTotal || 0,
+        round_off: purchase.roundOff || 0,
+        total: purchase.total || 0,
+        interstate: !!purchase.interstate,
+        place_of_supply: purchase.placeOfSupply || '',
+        payment_status: purchase.paymentStatus || 'unpaid',
+        amount_paid: purchase.amountPaid || 0,
+        source: purchase.source || 'manual',
+        items: purchase.items || []
+      }
+    });
+    return { data, error: error?.message };
+  },
+
+  async fetchPurchases(shopId, limit = 200) {
+    const { data, error } = await _sb
+      .from('purchases').select('*').eq('shop_id', shopId)
+      .order('created_at', { ascending: false }).limit(limit);
+    return { data: data || [], error: error?.message };
+  },
+
+  async fetchVendors(shopId) {
+    const { data, error } = await _sb
+      .from('vendors').select('*').eq('shop_id', shopId).order('name');
+    return { data: data || [], error: error?.message };
+  },
+
+  async fetchStockAlerts(shopId) {
+    const { data, error } = await _sb.rpc('shop_stock_alerts', { p_shop_id: shopId });
     return { data, error: error?.message };
   },
 
@@ -258,6 +308,8 @@ const SB = {
 
   /* ---------------- AI INVOICE OCR ---------------- */
 
+  // Returns the full reconciled bill object from the Edge Function:
+  // { bill_header, bill_items, bill_summary, extraction_meta, staging_id }
   async parseInvoiceImage(file) {
     const base64 = await new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -269,18 +321,47 @@ const SB = {
     const { data: { session } } = await _sb.auth.getSession();
     if (!session) return { error: 'Not signed in.' };
 
-    const resp = await fetch(`${SUPABASE_URL}/functions/v1/ai-invoice-parse`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${session.access_token}`,
-      },
-      body: JSON.stringify({ image_base64: base64, mime_type: file.type || 'image/jpeg' }),
-    });
+    // A large photo over a shop's mobile data can legitimately take a while;
+    // 60s is generous enough not to kill a slow-but-working request, and
+    // short enough that a hung call doesn't leave the UI stuck forever.
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 60000);
 
-    const json = await resp.json();
-    if (!resp.ok) return { error: json.error || 'AI parse failed' };
-    return { items: json.items || [] };
+    try {
+      const resp = await fetch(`${SUPABASE_URL}/functions/v1/ai-invoice-parse`, {
+        method: 'POST',
+        signal: controller.signal,
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({ image_base64: base64, mime_type: file.type || 'image/jpeg' }),
+      });
+
+      const json = await resp.json();
+      if (!resp.ok) return { error: json.error || `AI parse failed (${resp.status})` };
+      return { bill: json };
+    } catch (err) {
+      if (err.name === 'AbortError') {
+        return { error: 'The AI took too long to respond. Try a smaller or clearer photo.' };
+      }
+      return { error: err.message || 'Network error reaching the AI service.' };
+    } finally {
+      clearTimeout(timeout);
+    }
+  },
+
+  /* ---------------- SUBSCRIPTION ---------------- */
+
+  async fetchSubscription(shopId) {
+    const { data, error } = await _sb.rpc('get_shop_subscription', { p_shop_id: shopId });
+    return { data, error: error?.message };
+  },
+
+  async fetchAllPlans() {
+    const { data, error } = await _sb
+      .from('subscription_plans').select('*').order('display_order');
+    return { data: data || [], error: error?.message };
   },
 
   /* ---------------- SUPER-ADMIN CROSS-SHOP ACCESS ---------------- */

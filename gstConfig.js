@@ -82,7 +82,16 @@ const GstConfig = {
    duplicated arithmetic is how invoice totals and report totals drift apart.
    ========================================================================== */
 const TaxEngine = {
-  round2(n) { return Math.round((n + Number.EPSILON) * 100) / 100; },
+  // JavaScript's Math.round breaks ties toward +Infinity, so +0.005 rounds
+  // to 0.01 but -0.005 rounds to 0 — the same magnitude treated differently
+  // by sign. Round-off adjustments and credit-note amounts are routinely
+  // negative, so this rounds half AWAY FROM ZERO in both directions, which
+  // is the convention Indian invoicing (and every accountant) expects.
+  round2(n) {
+    if (!isFinite(n)) return 0;
+    const sign = n < 0 ? -1 : 1;
+    return sign * Math.round((Math.abs(n) + Number.EPSILON) * 100) / 100;
+  },
 
   // Resolve place of supply. Priority:
   //   1. Customer GSTIN state code (most authoritative — it's registered)

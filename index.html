@@ -56,7 +56,7 @@
         </div>
 
         <h2 class="auth-h2" id="authFormTitle">Sign in to your account</h2>
-        <p class="auth-sub" id="authFormSub">Enter your mobile number and we will send you an OTP.</p>
+        <p class="auth-sub" id="authFormSub">Enter your phone number and we'll send you an OTP — no password needed.</p>
 
         <!-- Phone -->
         <div id="panePhone">
@@ -64,7 +64,7 @@
             <button type="button" class="cc-btn" id="ccBtn" onclick="toggleCountryList()">
               <span id="ccFlag">🇮🇳</span> <span id="ccDial">+91</span> <span class="cc-caret">▾</span>
             </button>
-            <input type="tel" id="loginPhone" inputmode="numeric" placeholder="Mobile number" autocomplete="tel-national" oninput="onPhoneInput()">
+            <input type="tel" id="loginPhone" inputmode="numeric" placeholder="8617589620" autocomplete="tel-national" oninput="onPhoneInput()">
           </div>
           <div id="ccList" class="cc-list" style="display:none;"></div>
           <p class="auth-err" id="phoneError"></p>
@@ -73,7 +73,7 @@
 
         <!-- Email -->
         <div id="paneEmail" style="display:none;">
-          <input type="email" class="auth-field" id="loginEmail" placeholder="Email address" autocomplete="email">
+          <input type="email" class="auth-field" id="loginEmail" placeholder="name@example.com" autocomplete="email">
           <p class="auth-err" id="emailError"></p>
           <button type="button" class="auth-primary" id="emailOtpBtn" onclick="requestOtp('email')">Get OTP <span class="ap-ico">→]</span></button>
         </div>
@@ -120,19 +120,19 @@
         <p class="auth-sub">We'll verify your number, then set up your store.</p>
 
         <label class="auth-lbl">SHOP NAME</label>
-        <input type="text" class="auth-field" id="regShopName" placeholder="Shop name">
+        <input type="text" class="auth-field" id="regShopName" placeholder="e.g. Abhijit Electronics">
 
         <label class="auth-lbl">OWNER NAME</label>
-        <input type="text" class="auth-field" id="regOwnerName" placeholder="Owner name">
+        <input type="text" class="auth-field" id="regOwnerName" placeholder="e.g. Abhijit Modak">
 
         <label class="auth-lbl">MOBILE NUMBER</label>
         <div class="phone-row">
           <button type="button" class="cc-btn" disabled><span>🇮🇳</span> +91</button>
-          <input type="tel" id="regPhone" inputmode="numeric" placeholder="Mobile number">
+          <input type="tel" id="regPhone" inputmode="numeric" placeholder="8617589620">
         </div>
 
         <label class="auth-lbl">EMAIL ADDRESS <span class="lbl-opt">(optional)</span></label>
-        <input type="email" class="auth-field" id="regEmail" placeholder="Email address">
+        <input type="email" class="auth-field" id="regEmail" placeholder="owner@shop.com">
 
         <p class="auth-err" id="regError"></p>
         <button type="button" class="auth-primary" onclick="submitRegistration()">Continue <span class="ap-ico">→</span></button>
@@ -146,10 +146,10 @@
         <p class="auth-sub">You can always change this in Settings.</p>
 
         <label class="auth-lbl">STORE ADDRESS</label>
-        <input type="text" class="auth-field" id="regAddress" placeholder="Store address">
+        <input type="text" class="auth-field" id="regAddress" placeholder="Market, City, State, PIN code">
 
         <label class="auth-lbl">GSTIN <span class="lbl-opt">(optional)</span></label>
-        <input type="text" class="auth-field" id="regGstin" placeholder="GSTIN" oninput="onRegGstinInput(this.value)">
+        <input type="text" class="auth-field" id="regGstin" placeholder="19ABCDE1234F1Z5" oninput="onRegGstinInput(this.value)">
         <p class="auth-hint" id="regStateHint"></p>
 
         <label class="auth-lbl">STATE / PLACE OF SUPPLY</label>
@@ -218,7 +218,22 @@
         </div>
 
         <div class="header-btn-group">
-          <div class="net-badge online" id="networkStatusBadge">
+          <div class="sync-chip ok" id="syncStatusChip"><span class="sync-dot"></span>Synced</div>
+
+          <div class="alert-bell-wrap">
+            <button class="alert-bell" onclick="toggleAlertPanel()" aria-label="Alerts">
+              🔔<span class="alert-badge" id="alertBadge" style="display:none;">0</span>
+            </button>
+            <div class="alert-panel" id="alertPanel">
+              <div class="alert-panel-head">
+                <strong>Needs attention</strong>
+                <button onclick="toggleAlertPanel()" aria-label="Close">✕</button>
+              </div>
+              <div class="alert-panel-body" id="alertPanelBody"></div>
+            </div>
+          </div>
+
+          <div class="net-badge online" id="networkStatusBadge" style="display:none;">
             <span class="net-dot"></span>
             <span id="networkStatusText">Online</span>
           </div>
@@ -323,17 +338,18 @@
             </div>
 
             <div class="sector-chips" id="sectorChipsBar">
-              <div class="sector-chip active" onclick="filterSector('All', this)">All Items</div>
-              <div class="sector-chip" onclick="filterSector('Electronics', this)">Electronics (IMEI)</div>
-              <div class="sector-chip" onclick="filterSector('Pharmacy', this)">Pharmacy (Batch/Exp)</div>
-              <div class="sector-chip" onclick="filterSector('Jewelry', this)">Jewelry (HUID/Karat)</div>
-              <div class="sector-chip" onclick="filterSector('Grocery', this)">Grocery (FMCG)</div>
+              <div class="sector-chip active" onclick="resetCatalogPaging();filterSector('All', this)">All Items</div>
+              <div class="sector-chip" onclick="resetCatalogPaging();filterSector('Electronics', this)">Electronics (IMEI)</div>
+              <div class="sector-chip" onclick="resetCatalogPaging();filterSector('Pharmacy', this)">Pharmacy (Batch/Exp)</div>
+              <div class="sector-chip" onclick="resetCatalogPaging();filterSector('Jewelry', this)">Jewelry (HUID/Karat)</div>
+              <div class="sector-chip" onclick="resetCatalogPaging();filterSector('Grocery', this)">Grocery (FMCG)</div>
             </div>
 
             <div class="quick-catalog" id="catalogGrid"></div>
           </div>
 
           <div class="pos-right">
+            <div id="altSuggestBox" class="alt-suggest" style="display:none;"></div>
             <div class="party-entry-card">
               <input type="text" id="custPhone" placeholder="Mobile (Auto-Fill Khata)" oninput="autoFillCustomer(this.value)">
               <input type="text" id="custName" placeholder="Customer Name">
@@ -480,7 +496,9 @@
                 <h3 id="drillReportTitle" style="font-size:1.05rem; font-weight:800; color:var(--text-dark);">Report Details</h3>
                 <p id="drillFilterLabel" style="font-size:0.76rem; color:var(--text-muted); margin-top:2px;"></p>
               </div>
-              <div style="display:flex; gap:8px; flex-wrap:wrap;">
+              <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+                <span id="lastSyncedLabel" style="font-size:0.74rem; color:var(--text-muted);"></span>
+                <button class="btn-pill secondary" id="refreshCloudBtn" onclick="refreshFromCloud()">Refresh from cloud</button>
                 <button class="btn-pill secondary" onclick="exportCurrentViewToExcel()">Excel</button>
                 <button class="btn-pill secondary" onclick="exportCurrentReportCSV()">CSV</button>
                 <button class="btn-pill primary" onclick="printReportDocument()">Print</button>
@@ -567,6 +585,15 @@
               </span>
               <span class="sc-chev">›</span>
             </button>
+
+            <button class="settings-card" onclick="openSettingsPanel('subscription')">
+              <span class="sc-ico"><svg class="ic lg"><use href="#i-wallet"/></svg></span>
+              <span class="sc-body">
+                <strong>Subscription &amp; Billing</strong>
+                <small>Current plan and what's included</small>
+              </span>
+              <span class="sc-chev">›</span>
+            </button>
           </div>
         </div>
 
@@ -587,6 +614,22 @@
             <h3>Store Profile</h3>
           </div>
           <div class="settings-panel-body">
+            <div class="settings-block" style="margin-bottom:4px;">
+              <h4>Shop Logo</h4>
+              <div style="display:flex; align-items:center; gap:14px;">
+                <div class="logo-preview" id="logoPreview">SU</div>
+                <div style="flex:1;">
+                  <input type="file" id="logoFileInput" accept="image/png,image/jpeg,image/webp" style="display:none;" onchange="handleLogoUpload(event)">
+                  <button class="btn-pill secondary" onclick="document.getElementById('logoFileInput').click()">Upload Logo</button>
+                  <button class="btn-pill ghost" id="logoRemoveBtn" style="display:none;" onclick="removeShopLogo()">Remove</button>
+                  <p class="settings-hint" style="margin-top:6px;">
+                    PNG or JPG, square works best. Appears on A4 invoices and thermal receipts.
+                    Stored compressed at 256×256 so it never bloats your offline cache.
+                  </p>
+                  <p id="logoStatus" class="settings-hint" style="margin:4px 0 0;"></p>
+                </div>
+              </div>
+            </div>
             <div class="form-input"><label>Trade / Shop Name *</label><input type="text" id="cfgName" oninput="updateLivePreview()"></div>
             <div class="form-input"><label>GSTIN Number</label><input type="text" id="cfgGst" oninput="updateLivePreview()"></div>
             <div class="form-input"><label>Contact Phone Number *</label><input type="tel" id="cfgPhone" oninput="updateLivePreview()"></div>
@@ -628,6 +671,22 @@
                 <label>Default HSN / SAC Code</label>
                 <input type="text" id="cfgDefaultHsn" placeholder="8517" oninput="saveComplianceSettings()">
               </div>
+            </div>
+
+            <div class="settings-block">
+              <h4>Stock &amp; Expiry Alerts</h4>
+              <div class="form-input">
+                <label>Low-stock warning at or below</label>
+                <input type="number" id="cfgLowStock" min="0" value="5">
+              </div>
+              <div class="form-input">
+                <label>Warn when batch expiry is within (days)</label>
+                <input type="number" id="cfgExpiryDays" min="0" value="30">
+              </div>
+              <p class="settings-hint">
+                Applies shop-wide. Individual products can override the low-stock level in Stock Master.
+              </p>
+              <button type="button" class="btn-pill secondary" onclick="saveAlertSettings()">Save Alert Settings</button>
             </div>
 
             <div class="settings-block">
@@ -813,6 +872,55 @@
                 when you need it.
               </p>
             </div>
+          </div>
+        </div>
+
+        <!-- ---- Subscription & Billing ---- -->
+        <div class="settings-panel" id="panel-subscription">
+          <div class="settings-panel-head">
+            <button class="sp-back" onclick="closeSettingsPanel()" aria-label="Back">‹</button>
+            <h3>Subscription &amp; Billing</h3>
+          </div>
+          <div class="settings-panel-body">
+
+            <div class="settings-block" id="currentPlanBlock">
+              <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px;">
+                <div>
+                  <div style="display:flex; align-items:center; gap:8px;">
+                    <strong id="planName" style="font-size:1.05rem;">Free Access</strong>
+                    <span class="pill paid" id="planStatusPill">Active</span>
+                  </div>
+                  <p style="font-size:0.82rem; color:var(--text-muted); margin-top:3px;" id="planPrice">₹0 / month</p>
+                </div>
+              </div>
+
+              <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:12px; margin-top:14px;">
+                <div>
+                  <span style="font-size:0.7rem; color:var(--text-muted); display:block;">INVOICES THIS MONTH</span>
+                  <strong id="planInvoiceUsage" style="font-size:1.1rem;">—</strong>
+                </div>
+                <div>
+                  <span style="font-size:0.7rem; color:var(--text-muted); display:block;">STAFF ACCOUNTS</span>
+                  <strong id="planStaffUsage" style="font-size:1.1rem;">—</strong>
+                </div>
+              </div>
+
+              <ul id="planFeatureList" style="margin:14px 0 0; padding:0; list-style:none; font-size:0.85rem; display:flex; flex-direction:column; gap:7px;"></ul>
+
+              <p class="settings-hint" style="margin-top:12px; background:var(--success-soft); color:var(--mint-ink); padding:9px 11px; border-radius:9px;" id="planFreeBanner">
+                Billnaw is in its free access period — every feature is unlocked for every shop, no card required.
+              </p>
+            </div>
+
+            <div class="settings-block">
+              <h4>Other Plans</h4>
+              <p class="settings-hint" style="margin-bottom:10px;">
+                Shown for transparency about what's ahead — not purchasable yet.
+                Plan changes are controlled from the backend and roll out shop-by-shop.
+              </p>
+              <div id="otherPlansList" style="display:flex; flex-direction:column; gap:10px;"></div>
+            </div>
+
           </div>
         </div>
 
@@ -1007,17 +1115,49 @@
             <p style="font-size:0.78rem; color:var(--text-muted); margin-top:4px;">Gemini Vision parses line items, HSN, batch, serials, HUIDs &amp; GST slabs automatically</p>
           </div>
 
+          <div id="aiProgressBox" style="display:none; margin-top:12px; padding:14px; background:var(--brand-soft); border-radius:12px; text-align:center;">
+            <div class="ai-spinner"></div>
+            <p id="aiProgressText" style="font-size:0.84rem; color:var(--brand-ink); margin-top:8px; font-weight:600;">Reading the bill…</p>
+            <p style="font-size:0.72rem; color:var(--text-muted); margin-top:3px;">Usually 5–15 seconds. Nothing is written to stock until you confirm.</p>
+          </div>
+
           <div id="aiStagingSection" style="display:none; margin-top:12px;">
-            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
-              <strong>Extracted Staging Queue (<span id="aiStagingCount">0</span> items)</strong>
-              <button class="btn-pill primary" style="padding:4px 10px; font-size:0.75rem;" onclick="commitAllAiItems()">📥 Merge All into Stock</button>
+
+            <!-- Bill header: what the AI read off the top of the invoice -->
+            <div class="settings-block" style="margin-bottom:10px;">
+              <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+                <strong style="font-size:0.9rem;">Supplier &amp; Bill Details</strong>
+                <span class="pill pending" id="aiConfidenceBadge">MEDIUM CONFIDENCE</span>
+              </div>
+              <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; margin-top:10px; font-size:0.82rem;">
+                <div><span style="color:var(--text-muted); font-size:0.72rem; display:block;">SUPPLIER</span><strong id="aiVendorName">—</strong></div>
+                <div><span style="color:var(--text-muted); font-size:0.72rem; display:block;">BILL NO.</span><strong id="aiInvoiceNo">—</strong></div>
+                <div><span style="color:var(--text-muted); font-size:0.72rem; display:block;">BILL DATE</span><strong id="aiInvoiceDate">—</strong></div>
+                <div><span style="color:var(--text-muted); font-size:0.72rem; display:block;">SUPPLIER GSTIN</span><strong id="aiSupplierGstin">—</strong></div>
+                <div><span style="color:var(--text-muted); font-size:0.72rem; display:block;">BILL TOTAL</span><strong id="aiBillTotal">₹0.00</strong></div>
+              </div>
+              <p id="aiTotalCompare" style="display:none; font-size:0.76rem; color:#B7791F; background:var(--warning-soft); padding:9px 11px; border-radius:9px; margin-top:10px;"></p>
+            </div>
+
+            <div id="aiWarningsBox" style="display:none; font-size:0.78rem; color:#B7791F; background:var(--warning-soft); padding:11px 13px; border-radius:10px; margin-bottom:10px;"></div>
+
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; flex-wrap:wrap; gap:8px;">
+              <strong>Line Items (<span id="aiStagingCount">0</span>)</strong>
+              <span style="font-size:0.74rem; color:var(--text-muted);">Quantities and costs are editable — check them against the paper bill.</span>
             </div>
             <div class="ai-staging-table-wrap">
               <table class="data-table">
-                <thead><tr><th>Item Name</th><th>Barcode</th><th>Identifier (IMEI/HUID/Batch)</th><th>GST%</th><th>Qty</th><th>Cost</th><th>Action</th></tr></thead>
+                <thead><tr><th>Product</th><th>HSN</th><th>Tracking IDs</th><th style="text-align:center;">GST</th><th style="text-align:center;">Qty</th><th style="text-align:right;">Unit Rate</th><th></th></tr></thead>
                 <tbody id="aiStagingBody"></tbody>
               </table>
             </div>
+
+            <button class="btn-checkout-act" style="width:100%; margin-top:12px;" onclick="commitAiBill()">
+              Confirm &amp; Merge into Stock
+            </button>
+            <p style="font-size:0.72rem; color:var(--text-muted); text-align:center; margin-top:6px;">
+              This adds stock, records the supplier bill, and updates vendor payables in one step.
+            </p>
           </div>
         </div>
       </div>
@@ -1076,6 +1216,7 @@
       <p id="pIndustryTagline" style="font-size:9px; font-style:italic; text-align:center; margin:2px 0; display:none;"></p>
       <div class="p-grid">
         <div class="p-col">
+          <img id="pLogo" class="p-logo" style="display:none;" alt="">
           <h2 id="pStoreName">Om Betar Bhawan</h2>
           <p id="pStoreAddr">Store Address</p>
           <p>GSTIN: <strong id="pGstin">19ABCDE1234F1Z5</strong> &bull; Ph: <span id="pStorePhone">+91 9876543210</span></p>
@@ -1133,6 +1274,9 @@
   <script src="vendor/qrcode.js"></script>
   <script src="vendor/qrcode_UTF8.js"></script>
   <script src="gstConfig.js"></script>
+  <script src="exportEngine.js"></script>
+  <script src="alertEngine.js"></script>
+  <script src="printerEngine.js"></script>
   <script src="supabaseClient.js"></script>
   <script src="app.js"></script>
 </body>

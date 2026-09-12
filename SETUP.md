@@ -10,8 +10,30 @@
 1. Supabase Dashboard → SQL Editor → New query.
 2. Paste the **entire contents** of `supabase/migrations/0001_init.sql`, run it.
 3. New query again, paste `supabase/migrations/0002_stock_rpc.sql`, run it.
-4. Table Editor → confirm you see: shops, profiles, items, customers, sales,
-   ai_purchase_staging, audit_log.
+4. Repeat **in order** for each remaining migration — later ones depend on
+   functions defined in earlier ones, so order matters:
+   - `0003_atomic_invoice.sql` — atomic invoice commit + server invoice numbering
+   - `0004_role_cost_visibility.sql` — cashiers can't read wholesale cost
+   - `0005_sales_returns.sql` — credit notes, restock, GST reversal
+   - `0006_alerts_logo_composition.sql` — logo, stock/expiry alerts, medicine composition
+   - `0007_purchases_vendors.sql` — cloud purchase/vendor history, weighted-average cost
+   - `0008_subscription_plans.sql` — subscription plans (currently: everyone on 'free', all features unlocked)
+
+## Running the test suite
+```bash
+node tests/run-tests.js
+node tests/shop-day-simulation.js
+```
+The second file runs a full register → sell (cash + credit + inter-state) →
+return → dashboard-reconciliation sequence as one connected scenario, the
+way a shop owner would actually use a day, rather than testing each
+function in isolation.
+31 tests covering tax arithmetic, GST place-of-supply, CGST/SGST splits,
+round-off, returns/credit-note reversal, expiry parsing, composition
+matching, XSS escaping, offline-queue ordering and weighted-average cost.
+Exits non-zero on failure, so it drops straight into CI.
+5. Table Editor → confirm you see: shops, profiles, items, customers, sales,
+   sales_returns, ai_purchase_staging, audit_log.
 
 ## 3. Configure the frontend
 Open `supabaseClient.js`, replace the two placeholder lines:

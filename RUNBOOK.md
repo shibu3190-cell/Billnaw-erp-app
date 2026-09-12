@@ -134,6 +134,25 @@ Go to `http://localhost:3000`. Press **F12** to open DevTools and keep the **Con
 
 Run these in order and tick each one off.
 
+## TEST 0 — Automated tests (run these first, before touching a browser)
+
+```bash
+node tests/run-tests.js
+node tests/shop-day-simulation.js
+```
+
+`run-tests.js` (31 checks) verifies individual functions: tax rounding, GST
+place-of-supply, CGST/SGST splits, return arithmetic, expiry date parsing,
+composition matching, XSS escaping.
+
+`shop-day-simulation.js` (17 checks) runs a full connected scenario — a shop
+registers, sells cash + credit + inter-state, processes a return, and the
+dashboard numbers are checked to reconcile exactly across all of it. This is
+the test that catches "each piece works but the whole doesn't."
+
+Both must pass before you start manual testing below. If either fails, fix
+that first — a red automated test means a red manual test is coming.
+
 ## TEST 1 — Registration + email OTP
 1. Click **Register Business** tab.
 2. Fill in:

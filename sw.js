@@ -2,7 +2,7 @@
    BILLNAW SERVICE WORKER
    Bump CACHE_NAME on every deploy — this is what triggers the update flow.
    ========================================================================== */
-const CACHE_NAME = 'billnaw-v14.0-returns-exports';
+const CACHE_NAME = 'billnaw-v19.0-subscriptions-tested';
 const STATIC_ASSETS = [
   './',
   './index.html',
@@ -11,6 +11,9 @@ const STATIC_ASSETS = [
   './vendor/qrcode.js',
   './vendor/qrcode_UTF8.js',
   './gstConfig.js',
+  './exportEngine.js',
+  './alertEngine.js',
+  './printerEngine.js',
   './supabaseClient.js',
   './manifest.json',
   './icon.svg'

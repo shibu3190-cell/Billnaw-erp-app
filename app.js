@@ -39,7 +39,10 @@ const APP_STATE = {
     requireIdentifier: false,
     showRoundOff: true,
     defaultGstRate: 18,
-    defaultHsn: ''
+    defaultHsn: '',
+    logo: '',
+    lowStockThreshold: 5,
+    expiryWarnDays: 30
   },
 
   inventory: [
@@ -161,6 +164,7 @@ function persistState() {
     localStorage.setItem('bn_sales', JSON.stringify(APP_STATE.sales));
     localStorage.setItem('bn_seq', APP_STATE.invCounter.toString());
     localStorage.setItem('bn_returns', JSON.stringify(APP_STATE.returns || []));
+    localStorage.setItem('bn_purchases', JSON.stringify(APP_STATE.purchases || []));
   } catch (e) {}
 }
 
@@ -172,6 +176,8 @@ try {
   const seq = localStorage.getItem('bn_seq'); if (seq) APP_STATE.invCounter = parseInt(seq, 10);
   const cnq = localStorage.getItem('bn_cn_seq'); if (cnq) APP_STATE.cnCounter = parseInt(cnq, 10);
   const rts = localStorage.getItem('bn_returns'); if (rts) APP_STATE.returns = JSON.parse(rts);
+  const pch = localStorage.getItem('bn_purchases'); if (pch) APP_STATE.purchases = JSON.parse(pch);
+  APP_STATE.lastSyncedAt = localStorage.getItem('bn_last_synced') || null;
 } catch (e) {}
 
 /* ==========================================================================
@@ -337,6 +343,24 @@ function togglePasswordVisibility(inputId, btn) {
   if (btn) btn.innerText = show ? '🙈' : '👁';
 }
 
+
+/* ==========================================================================
+   HTML ESCAPING
+   Item names, customer names, addresses and reasons are user-controlled and
+   are interpolated into innerHTML all over this app. A party saved as
+   <img src=x onerror=alert(1)> would execute on every screen that lists them.
+   Every interpolation of user data now goes through esc().
+   ========================================================================== */
+function esc(v) {
+  if (v === null || v === undefined) return '';
+  return String(v)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 function fmtCost(v) {
   return (v === null || v === undefined || isNaN(v)) ? '—' : '₹' + Number(v).toFixed(2);
 }
@@ -368,6 +392,16 @@ function applyRoleSecurity(role) {
 /* ==========================================================================
    OFFLINE-FIRST SYNC ENGINE
    ========================================================================== */
+// Returns a real boolean. Previously this was written inline as
+// `error && !/duplicate key/i.test(error)`, which evaluates to null/undefined
+// when error is null — falsy, so it happened to work, but a predicate that
+// returns three different types is a trap for the next person who uses it
+// with === or passes it to a filter.
+function isFatalSyncError(error) {
+  if (!error) return false;
+  return !/duplicate key/i.test(String(error));
+}
+
 const SyncEngine = {
   queueKey: 'bn_offline_sync_queue',
 
@@ -377,37 +411,166 @@ const SyncEngine = {
     );
   },
 
-  enqueue(invoice) {
-    const q = JSON.parse(localStorage.getItem(this.queueKey) || '[]');
-    q.push(invoice);
-    localStorage.setItem(this.queueKey, JSON.stringify(q));
+  _read() {
+    try { return JSON.parse(localStorage.getItem(this.queueKey) || '[]'); }
+    catch (e) { return []; }
+  },
+  _write(q) { localStorage.setItem(this.queueKey, JSON.stringify(q)); },
+
+  // Unified queue. Previously only sales were queued — an offline return or
+  // purchase was written to local state and then simply never reached the
+  // server, so stock and credit notes silently diverged between devices.
+  // Every mutation now goes through the same envelope: { kind, payload }.
+  enqueue(payload, kind = 'sale') {
+    const q = this._read();
+    q.push({ kind, payload, queuedAt: new Date().toISOString() });
+    this._write(q);
+    updateSyncIndicator();
+  },
+
+  pendingCount() { return this._read().length; },
+
+  pendingBreakdown() {
+    const q = this._read();
+    return {
+      total: q.length,
+      sale: q.filter(e => (e.kind || 'sale') === 'sale').length,
+      return: q.filter(e => e.kind === 'return').length,
+      purchase: q.filter(e => e.kind === 'purchase').length
+    };
   },
 
   async flushSyncQueue() {
     if (!navigator.onLine || !APP_STATE.cloudSession) return;
-    const q = JSON.parse(localStorage.getItem(this.queueKey) || '[]');
+    const q = this._read();
     if (!q.length) return;
 
     const shopId = APP_STATE.tenantProfile.shopId;
     const remaining = [];
 
-    for (const invoice of q) {
-      // idempotency_key has a unique constraint in the DB — a retried sync
-      // of an already-saved invoice fails harmlessly with a duplicate-key
-      // error rather than double-booking the sale.
-      const { error } = await SB.saveSale(shopId, invoice);
-      if (error && !error.includes('duplicate key')) {
-        remaining.push(invoice); // keep it queued, try again next time
-        console.warn('Sync retry pending for', invoice.invoiceNo, error);
+    for (const entry of q) {
+      // Tolerate the old flat format (a bare invoice object) so a queue
+      // written by a previous version still drains after an app update.
+      const kind = entry.kind || 'sale';
+      const payload = entry.payload || entry;
+
+      let error = null;
+      try {
+        if (kind === 'sale') {
+          ({ error } = await SB.saveSale(shopId, payload));
+        } else if (kind === 'return') {
+          if (!payload.cloudSaleId) {
+            // The parent invoice hasn't synced yet, so there's no row to
+            // attach this credit note to. Keep it queued and retry after
+            // the sale ahead of it lands.
+            remaining.push(entry);
+            continue;
+          }
+          ({ error } = await SB.processReturn(shopId, payload.cloudSaleId, payload));
+        } else if (kind === 'purchase') {
+          ({ error } = await SB.savePurchase(shopId, payload));
+        }
+      } catch (e) {
+        error = e.message;
+      }
+
+      // A duplicate idempotency key means it already committed — success.
+      if (isFatalSyncError(error)) {
+        remaining.push(entry);
+        console.warn(`Sync retry pending (${kind}):`, error);
       }
     }
 
-    localStorage.setItem(this.queueKey, JSON.stringify(remaining));
-    if (remaining.length === 0) {
-      console.log('✅ Cloud sync complete — all queued invoices saved.');
+    this._write(remaining);
+    updateSyncIndicator();
+    if (!remaining.length) {
+      APP_STATE.lastSyncedAt = new Date().toISOString();
+      localStorage.setItem('bn_last_synced', APP_STATE.lastSyncedAt);
+      updateLastSyncedLabel();
     }
   }
 };
+
+/* ==========================================================================
+   OFFLINE SYNC STATUS INDICATOR
+   A shop owner who closes the app with unsynced sales sitting in localStorage
+   has no way to know they're at risk. This makes the queue visible.
+   ========================================================================== */
+function updateSyncIndicator() {
+  const el = document.getElementById('syncStatusChip');
+  if (!el) return;
+  const b = SyncEngine.pendingBreakdown();
+  const online = navigator.onLine;
+
+  // Name what's actually waiting. "3 pending" tells a shop owner nothing;
+  // "2 sales, 1 return waiting" tells them exactly what's at risk.
+  const parts = [];
+  if (b.sale) parts.push(`${b.sale} sale${b.sale > 1 ? 's' : ''}`);
+  if (b.return) parts.push(`${b.return} return${b.return > 1 ? 's' : ''}`);
+  if (b.purchase) parts.push(`${b.purchase} purchase${b.purchase > 1 ? 's' : ''}`);
+  const label = parts.join(', ');
+
+  if (!online) {
+    el.className = 'sync-chip offline';
+    el.innerHTML = `<span class="sync-dot"></span>Offline${label ? ` · ${esc(label)} waiting` : ''}`;
+  } else if (b.total > 0) {
+    el.className = 'sync-chip pending';
+    el.innerHTML = `<span class="sync-dot"></span>${esc(label)} waiting to sync`;
+  } else {
+    el.className = 'sync-chip ok';
+    el.innerHTML = `<span class="sync-dot"></span>Synced`;
+  }
+  el.title = APP_STATE.lastSyncedAt
+    ? `Last synced ${new Date(APP_STATE.lastSyncedAt).toLocaleString('en-IN')}`
+    : 'Not synced yet';
+}
+
+/* Human-readable "last synced" stamp (P1 #5). */
+function updateLastSyncedLabel() {
+  const el = document.getElementById('lastSyncedLabel');
+  if (!el) return;
+  if (!APP_STATE.lastSyncedAt) { el.innerText = 'Never synced from cloud'; return; }
+  const mins = Math.floor((Date.now() - new Date(APP_STATE.lastSyncedAt)) / 60000);
+  el.innerText = mins < 1 ? 'Synced just now'
+    : mins < 60 ? `Synced ${mins} min ago`
+    : `Synced ${new Date(APP_STATE.lastSyncedAt).toLocaleString('en-IN')}`;
+}
+
+/* Explicit pull-from-cloud (P1 #5). Reports read from local state, so a
+   second device showed stale figures until the page was reloaded. */
+async function refreshFromCloud() {
+  if (!APP_STATE.cloudSession || !APP_STATE.tenantProfile.shopId) {
+    showSaasToast('Sign in to refresh from cloud.', 3000, 'err');
+    return;
+  }
+  if (!navigator.onLine) {
+    showSaasToast('You are offline — showing the last cached data.', 3000, 'err');
+    return;
+  }
+
+  const btn = document.getElementById('refreshCloudBtn');
+  if (btn) { btn.disabled = true; btn.innerText = 'Refreshing…'; }
+
+  try {
+    await SyncEngine.flushSyncQueue();      // push local changes up first
+    await hydrateCloudData(APP_STATE.tenantProfile.shopId);  // then pull down
+    APP_STATE.lastSyncedAt = new Date().toISOString();
+    localStorage.setItem('bn_last_synced', APP_STATE.lastSyncedAt);
+    persistState();
+    renderDashboard();
+    renderCatalog();
+    renderAlertCentre();
+    updateLastSyncedLabel();
+    updateSyncIndicator();
+    showSaasToast('Refreshed from cloud.', 2500);
+  } catch (err) {
+    showSaasToast(`Refresh failed: ${err.message}`, 4000, 'err');
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerText = 'Refresh from cloud'; }
+  }
+}
+
+
 
 /* ==========================================================================
    AUTHENTICATION — OTP ONLY
@@ -538,7 +701,7 @@ function buildCountryList() {
   const list = document.getElementById('ccList');
   if (!list) return;
   list.innerHTML = COUNTRY_CODES.map(c =>
-    `<button type="button" class="cc-item" onclick="pickCountry('${c.dial}','${c.flag}')">${c.flag} ${c.name} <span>${c.dial}</span></button>`
+    `<button type="button" class="cc-item" onclick="pickCountry('${c.dial}','${c.flag}')">${c.flag} ${esc(c.name)} <span>${c.dial}</span></button>`
   ).join('');
 }
 
@@ -831,22 +994,53 @@ function hydrateTenantFromShop(shop) {
   p.terms = shop.terms || p.terms;
   p.printerFormat = shop.printer_format || p.printerFormat;
   p.thermalWidth = shop.thermal_width || p.thermalWidth;
+  p.logo = shop.logo || p.logo || '';
+  p.lowStockThreshold = shop.low_stock_threshold ?? p.lowStockThreshold ?? 5;
+  p.expiryWarnDays = shop.expiry_warn_days ?? p.expiryWarnDays ?? 30;
   p.isRegistered = true;
   persistState();
   syncProfileToDOM();
+  applyShopLogo();
 }
 
 async function hydrateCloudData(shopId) {
-  const [itemsRes, custRes, salesRes] = await Promise.all([
-    SB.fetchItems(shopId), SB.fetchCustomers(shopId), SB.fetchSales(shopId)
+  const [itemsRes, custRes, salesRes, purchRes, retRes] = await Promise.all([
+    SB.fetchItems(shopId), SB.fetchCustomers(shopId), SB.fetchSales(shopId),
+    SB.fetchPurchases(shopId), SB.fetchReturns(shopId)
   ]);
+
+  if (purchRes && purchRes.data) {
+    APP_STATE.purchases = purchRes.data.map(p => ({
+      idempotency_key: p.idempotency_key, vendor: p.vendor_snapshot || {},
+      billNo: p.bill_no || '', billDate: p.bill_date,
+      date: new Date(p.created_at).toLocaleDateString('en-IN'), timestamp: p.created_at,
+      taxable: Number(p.taxable), gstTotal: Number(p.gst_total),
+      roundOff: Number(p.round_off), total: Number(p.total),
+      interstate: p.interstate, paymentStatus: p.payment_status,
+      amountPaid: Number(p.amount_paid), source: p.source, items: p.items || []
+    }));
+  }
+
+  if (retRes && retRes.data) {
+    APP_STATE.returns = retRes.data.map(r => ({
+      creditNoteNo: r.credit_note_no, idempotency_key: r.idempotency_key,
+      invoiceNo: null, cloudSaleId: r.sale_id,
+      date: new Date(r.created_at).toLocaleDateString('en-IN'), timestamp: r.created_at,
+      customer: r.customer_snapshot || {}, reason: r.reason, restock: r.restock,
+      taxable: Number(r.taxable), gstTotal: Number(r.gst_total),
+      roundOff: Number(r.round_off), total: Number(r.total),
+      interstate: r.interstate, items: r.items || []
+    }));
+  }
 
   if (itemsRes.data && itemsRes.data.length) {
     APP_STATE.inventory = itemsRes.data.map(i => ({
       id: i.id, name: i.name, category: i.category, barcode: i.barcode,
       hsn: i.hsn, price: Number(i.price), cost: Number(i.cost), gst: Number(i.gst),
       stock: i.stock, serials: i.serials || [], huids: i.huids || [],
-      batches: i.batches || [], meta: i.meta || {}
+      batches: i.batches || [], meta: i.meta || {},
+      lowStockLevel: i.low_stock_level ?? undefined,
+      composition: i.composition || ''
     }));
   }
 
@@ -879,10 +1073,19 @@ async function hydrateCloudData(shopId) {
       const n = parseInt(String(s.invoiceNo).replace(/[^\d]/g, ''), 10);
       if (!isNaN(n) && n > maxSeen) maxSeen = n;
     });
+    // Credit notes come back referencing sale_id; map them to the human
+    // invoice number so Customer 360 and the register can pair them up.
+    const byCloudId = {};
+    APP_STATE.sales.forEach(sl => { if (sl.cloudId) byCloudId[sl.cloudId] = sl.invoiceNo; });
+    (APP_STATE.returns || []).forEach(r => {
+      if (!r.invoiceNo && r.cloudSaleId && byCloudId[r.cloudSaleId]) r.invoiceNo = byCloudId[r.cloudSaleId];
+    });
+
     if (maxSeen + 1 > APP_STATE.invCounter) {
       APP_STATE.invCounter = maxSeen + 1;
       localStorage.setItem('bn_seq', APP_STATE.invCounter.toString());
     localStorage.setItem('bn_returns', JSON.stringify(APP_STATE.returns || []));
+    localStorage.setItem('bn_purchases', JSON.stringify(APP_STATE.purchases || []));
     }
   }
 }
@@ -996,6 +1199,7 @@ function openSettingsPanel(key) {
   if (key === 'gst') loadComplianceSettingsIntoDOM();
   if (key === 'industry') loadIndustrySettingsIntoDOM();
   if (key === 'staff') loadStaffPanel();
+  if (key === 'subscription') loadSubscriptionPanel();
 }
 
 function closeSettingsPanel() {
@@ -1041,6 +1245,8 @@ function loadComplianceSettingsIntoDOM() {
   if (hsnChk) hsnChk.checked = !!p.mandatoryHsn;
   const roundChk = document.getElementById('cfgShowRoundOff');
   if (roundChk) roundChk.checked = p.showRoundOff !== false;
+  setVal('cfgLowStock', String(p.lowStockThreshold ?? 5));
+  setVal('cfgExpiryDays', String(p.expiryWarnDays ?? 30));
 }
 
 function saveComplianceSettings() {
@@ -1121,7 +1327,7 @@ async function loadStaffPanel() {
     const roleLabel = m.role === 'owner' ? 'Owner' : (m.role === 'cashier' ? 'Cashier' : m.role);
     const canSeeCost = m.role !== 'cashier';
     return `<tr>
-      <td><strong>${m.full_name || 'Unnamed'}</strong></td>
+      <td><strong>${esc(m.full_name || 'Unnamed')}</strong></td>
       <td><span class="pill ${m.role === 'owner' ? 'info' : 'draft'}">${roleLabel}</span></td>
       <td>${canSeeCost ? '<span class="pill paid">Visible</span>' : '<span class="pill overdue">Hidden</span>'}</td>
     </tr>`;
@@ -1334,7 +1540,7 @@ function renderCustomer360Profile(custPhone) {
 
   tbody.innerHTML = history.map(s => {
     const itemText = (s.items || []).map(i =>
-      `${i.name} ×${i.qty}${i.assignedIdentifier ? ` <code style="font-size:0.72rem; color:var(--text-muted);">${i.assignedIdentifier}</code>` : ''}`
+      `${esc(i.name)} ×${i.qty}${i.assignedIdentifier ? ` <code style="font-size:0.72rem; color:var(--text-muted);">${esc(i.assignedIdentifier)}</code>` : ''}`
     ).join('<br>');
 
     const rets = returnsFor(s.invoiceNo);
@@ -1345,17 +1551,17 @@ function renderCustomer360Profile(custPhone) {
 
     const canReturn = s.status !== 'returned';
     return `<tr>
-      <td><strong>${s.invoiceNo}</strong>${rets.length ? `<br><small style="color:var(--text-muted);">${rets.map(r => r.creditNoteNo).join(', ')}</small>` : ''}</td>
+      <td><strong>${esc(s.invoiceNo)}</strong>${rets.length ? `<br><small style="color:var(--text-muted);">${rets.map(r => r.creditNoteNo).join(', ')}</small>` : ''}</td>
       <td>${s.date}</td>
       <td style="font-size:0.82rem;">${itemText || '—'}</td>
-      <td>${s.tender}</td>
+      <td>${esc(s.tender)}</td>
       <td><span class="pill ${pill}">${label}</span></td>
       <td style="text-align:right; font-weight:800;">₹${(s.total || 0).toFixed(2)}${
         s.returnedValue ? `<br><small style="color:var(--danger); font-weight:600;">−₹${s.returnedValue.toFixed(2)} returned</small>` : ''
       }</td>
       <td style="text-align:center;">
         ${canReturn
-          ? `<button class="btn-pill secondary" style="padding:6px 12px; font-size:0.74rem;" onclick="openReturnModal('${s.invoiceNo}')">Return</button>`
+          ? `<button class="btn-pill secondary" style="padding:6px 12px; font-size:0.74rem;" onclick="openReturnModal('${esc(s.invoiceNo)}')">Return</button>`
           : '<span style="color:var(--text-faint); font-size:0.76rem;">—</span>'}
       </td>
     </tr>`;
@@ -1473,7 +1679,7 @@ function populateRestockPicker() {
   if (!sel) return;
   const items = [...(APP_STATE.inventory || [])].sort((a, b) => a.name.localeCompare(b.name));
   sel.innerHTML = `<option value="">— New product / enter manually below —</option>` +
-    items.map(i => `<option value="${i.id}">${i.name} — ${i.stock} in stock · HSN ${i.hsn || '—'}</option>`).join('');
+    items.map(i => `<option value="${i.id}">${esc(i.name)} — ${i.stock} in stock · HSN ${esc(i.hsn || '—')}</option>`).join('');
 }
 
 function prefillFromExistingItem(itemId) {
@@ -1501,7 +1707,7 @@ function prefillFromExistingItem(itemId) {
   const notice = document.getElementById('restockNotice');
   if (notice) {
     notice.style.display = 'block';
-    notice.innerHTML = `Restocking <strong>${it.name}</strong> — currently ${it.stock} in stock. New quantity will be added to that, and any serials/batches you enter are appended to the existing pool.`;
+    notice.innerHTML = `Restocking <strong>${esc(it.name)}</strong> — currently ${it.stock} in stock. New quantity will be added to that, and any serials/batches you enter are appended to the existing pool.`;
   }
 }
 
@@ -1563,136 +1769,397 @@ function saveManualPurchase() {
 
   persistState();
   syncItemToCloud(targetItem);
+
+  // Record the supplier bill itself, not just the stock movement (P1 #4).
+  recordPurchaseBill({
+    vendor: {
+      name: document.getElementById('purVendor')?.value.trim() || '',
+      gstin: '', phone: '', stateCode: ''
+    },
+    billNo: document.getElementById('purBillNo')?.value.trim() || '',
+    items: [{
+      id: targetItem.id, name: targetItem.name, hsn: targetItem.hsn,
+      gst: targetItem.gst, qty, cost, price,
+      identifier: idArray[0] || '', expiry: ''
+    }],
+    source: 'manual'
+  });
+
   closeInwardModal();
   renderCatalog();
 }
 
+/* ==========================================================================
+   PURCHASE BILL RECORDING  (P1 #4)
+   The stock movement was already handled locally; this persists the vendor
+   bill behind it so cost history, payables and GSTR-2 data survive a cache
+   clear or a move to another device.
+   ========================================================================== */
+APP_STATE.purchases = APP_STATE.purchases || [];
+
+function recordPurchaseBill({ vendor, billNo, items, source = 'manual' }) {
+  const lines = (items || []).filter(i => i.qty > 0);
+  if (!lines.length) return;
+
+  // Purchase GST uses the same engine as sales so input tax and output tax
+  // are computed identically — a mismatch between the two is exactly what
+  // makes a GSTR-3B reconciliation fail.
+  const priced = lines.map(l => ({
+    ...l,
+    ...TaxEngine.computeLine({ price: l.cost, qty: l.qty, gstRate: l.gst })
+  }));
+  const totals = TaxEngine.computeInvoiceTotals(priced);
+
+  const purchase = {
+    idempotency_key: SyncEngine.generateIdempotencyKey(),
+    vendor: vendor || {},
+    billNo: billNo || '',
+    billDate: new Date().toISOString().slice(0, 10),
+    date: new Date().toLocaleDateString('en-IN'),
+    timestamp: new Date().toISOString(),
+    taxable: totals.taxable,
+    gstTotal: totals.gstTotal,
+    roundOff: totals.roundOff,
+    total: totals.total,
+    interstate: TaxEngine.isInterstate({
+      customerGstin: vendor?.gstin || '',
+      customerStateCode: vendor?.stateCode || '',
+      shopStateCode: APP_STATE.tenantProfile.stateCode || ''
+    }),
+    paymentStatus: 'unpaid',
+    amountPaid: 0,
+    source,
+    items: priced
+  };
+
+  APP_STATE.purchases.push(purchase);
+  persistState();
+
+  if (APP_STATE.cloudSession && navigator.onLine) {
+    SB.savePurchase(APP_STATE.tenantProfile.shopId, purchase).then(({ error }) => {
+      if (isFatalSyncError(error)) SyncEngine.enqueue(purchase, 'purchase');
+      updateSyncIndicator();
+    });
+  } else {
+    SyncEngine.enqueue(purchase, 'purchase');
+  }
+}
+
+/* ==========================================================================
+   AI PURCHASE INGESTION — client side
+   The Edge Function returns a validated, reconciled bill (header + grouped
+   items + derived totals + warnings). This screen's job is to make a human
+   confirm it before anything touches stock, because an OCR mistake written
+   into inventory is far more expensive to unwind than one caught here.
+   ========================================================================== */
 async function processAiInvoice(event) {
-  if (!navigator.onLine) {
-    alert("Internet connection lost. Reconnect to process AI invoices.");
-    return;
-  }
-  if (!APP_STATE.cloudSession) {
-    alert("AI invoice reading requires you to be signed in to your cloud account.");
-    return;
-  }
   const file = event.target.files && event.target.files[0];
   if (!file) return;
 
-  const dropzone = document.querySelector('.ai-dropzone-box h3');
-  const originalLabel = dropzone ? dropzone.innerText : '';
-  if (dropzone) dropzone.innerText = '⏳ Reading invoice with AI…';
+  if (!navigator.onLine) {
+    showSaasToast('AI reading needs an internet connection. Use Manual Entry for now.', 4000, 'err');
+    event.target.value = '';
+    return;
+  }
+  if (!APP_STATE.cloudSession) {
+    showSaasToast('Sign in to your cloud account to use AI invoice reading.', 4000, 'err');
+    event.target.value = '';
+    return;
+  }
 
-  const { items, error } = await SB.parseInvoiceImage(file);
+  setDisplay('aiProgressBox', 'block');
+  setTxt('aiProgressText', 'Uploading and reading the bill…');
+  setDisplay('aiStagingSection', 'none');
 
-  if (dropzone) dropzone.innerText = originalLabel;
+  const { bill, error } = await SB.parseInvoiceImage(file);
+
+  setDisplay('aiProgressBox', 'none');
+  event.target.value = ''; // allow re-uploading the same file after a fix
 
   if (error) {
-    alert(`AI invoice reading failed: ${error}\nUse Manual Entry instead for this bill.`);
+    showSaasToast(`AI reading failed: ${error}`, 6000, 'err');
     return;
   }
 
-  // Server returns: {name, hsn, gst_rate, qty, unit_cost, identifier}
-  // Map to the shape the staging table/commit functions expect.
-  APP_STATE.aiStagingItems = (items || []).map(it => ({
-    name: it.name || 'Unknown Item',
-    barcode: '',
-    hsn: it.hsn || '8517',
-    identifier: it.identifier || '-',
-    gst: Number(it.gst_rate) || 18,
-    qty: Number(it.qty) || 1,
-    cost: Number(it.unit_cost) || 0,
-  }));
-
-  if (!APP_STATE.aiStagingItems.length) {
-    alert("AI could not confidently read any line items from this image. Try a clearer photo, or use Manual Entry.");
+  const items = bill?.bill_items || [];
+  if (!items.length) {
+    showSaasToast('No line items could be read. Try a flatter, better-lit photo — or use Manual Entry.', 6000, 'err');
     return;
   }
 
+  APP_STATE.aiBill = bill;
+
+  // Flatten to the staging shape, keeping every tracking identifier.
+  APP_STATE.aiStagingItems = items.map(it => {
+    const tm = it.tracking_metadata || {};
+    return {
+      name: it.product_name,
+      hsn: it.hsn_sac || '',
+      gst: Number(it.gst_percentage) || 0,
+      qty: Number(it.quantity) || 0,
+      cost: Number(it.unit_rate) || 0,
+      lineTotal: Number(it.line_total_inclusive) || 0,
+      serials: Array.isArray(tm.serial_or_imei) ? tm.serial_or_imei : [],
+      batch: tm.batch_number || '',
+      expiry: tm.expiry_date || '',
+      huid: tm.hudi_or_other_id || '',
+      // Resolved against existing stock so the reviewer can see at a glance
+      // whether this is a restock or a brand-new SKU.
+      matchedId: matchInventoryItem(it.product_name)?.id || null
+    };
+  });
+
+  renderAiBillHeader(bill);
   renderAiStagingTable();
   setDisplay('aiStagingSection', 'block');
+}
+
+// Fuzzy-matches an extracted product name to existing stock. Exact match
+// first, then a normalised compare — OCR routinely returns
+// "Samsung  Galaxy A55" for an item saved as "Samsung Galaxy A55", and a
+// strict compare would create a duplicate SKU with its own serial pool.
+function matchInventoryItem(name) {
+  const norm = v => String(v || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const target = norm(name);
+  if (!target) return null;
+  const inv = APP_STATE.inventory || [];
+  return inv.find(i => norm(i.name) === target)
+      || inv.find(i => norm(i.name).includes(target) || target.includes(norm(i.name)))
+      || null;
+}
+
+function renderAiBillHeader(bill) {
+  const h = bill.bill_header || {};
+  const sum = bill.bill_summary || {};
+  const meta = bill.extraction_meta || {};
+
+  setTxt('aiVendorName', h.vendor_name || 'Not detected');
+  setTxt('aiInvoiceNo', h.invoice_number || 'Not detected');
+  setTxt('aiInvoiceDate', h.invoice_date || 'Not detected');
+  setTxt('aiSupplierGstin', h.supplier_gstin || 'Not detected');
+  setTxt('aiBillTotal', `₹${(sum.grand_total || 0).toFixed(2)}`);
+
+  // Confidence is shown prominently rather than buried: a "low" badge is the
+  // signal to check this bill against the paper before merging.
+  const badge = document.getElementById('aiConfidenceBadge');
+  if (badge) {
+    const c = meta.confidence || 'medium';
+    badge.className = `pill ${c === 'high' ? 'paid' : c === 'medium' ? 'pending' : 'overdue'}`;
+    badge.innerText = `${c.toUpperCase()} CONFIDENCE`;
+  }
+
+  const warnBox = document.getElementById('aiWarningsBox');
+  if (warnBox) {
+    const warnings = meta.warnings || [];
+    if (!warnings.length) {
+      warnBox.style.display = 'none';
+    } else {
+      warnBox.style.display = 'block';
+      warnBox.innerHTML = `<strong>${warnings.length} thing(s) to check:</strong><ul>` +
+        warnings.map(w => `<li>${esc(w)}</li>`).join('') + `</ul>`;
+    }
+  }
+
+  // Show the model's own total next to the derived one when they disagree —
+  // the reviewer needs to see both numbers to decide which is right.
+  const cmp = document.getElementById('aiTotalCompare');
+  if (cmp) {
+    const printed = sum.printed_grand_total;
+    if (printed && Math.abs(printed - (sum.grand_total || 0)) > 1) {
+      cmp.style.display = 'block';
+      cmp.innerHTML = `Bill shows <strong>₹${printed.toFixed(2)}</strong>, line items add to <strong>₹${(sum.grand_total || 0).toFixed(2)}</strong>. Verify against the paper before merging.`;
+    } else {
+      cmp.style.display = 'none';
+    }
+  }
 }
 
 function renderAiStagingTable() {
   const tbody = document.getElementById('aiStagingBody');
   setTxt('aiStagingCount', APP_STATE.aiStagingItems.length);
   if (!tbody) return;
-  tbody.innerHTML = '';
 
-  APP_STATE.aiStagingItems.forEach((it, idx) => {
-    tbody.innerHTML += `
-      <tr>
-        <td><strong>${it.name}</strong></td>
-        <td><code>${it.barcode || '-'}</code></td>
-        <td><code>${it.identifier}</code></td>
-        <td>${it.gst}%</td>
-        <td>${it.qty}</td>
-        <td>₹${it.cost.toFixed(2)}</td>
-        <td>
-          <button class="btn-pill primary" style="padding:4px 8px; font-size:0.7rem;" onclick="commitSingleAiItem(${idx})">Merge</button>
-        </td>
-      </tr>
-    `;
-  });
+  tbody.innerHTML = APP_STATE.aiStagingItems.map((it, idx) => {
+    const ids = [
+      ...it.serials,
+      it.batch ? `Batch ${it.batch}` : '',
+      it.expiry ? `Exp ${it.expiry}` : '',
+      it.huid ? `HUID ${it.huid}` : ''
+    ].filter(Boolean);
+
+    const serialWarn = it.serials.length > 0 && it.serials.length !== it.qty;
+
+    return `<tr>
+      <td>
+        <strong>${esc(it.name)}</strong>
+        ${it.matchedId
+          ? '<br><span class="pill info" style="margin-top:3px;">Restock</span>'
+          : '<br><span class="pill draft" style="margin-top:3px;">New product</span>'}
+      </td>
+      <td><code>${esc(it.hsn || '—')}</code></td>
+      <td style="max-width:200px; font-size:0.74rem;">
+        ${ids.length ? ids.map(v => `<code>${esc(v)}</code>`).join('<br>') : '<span style="color:var(--text-faint);">none</span>'}
+        ${serialWarn ? `<br><span style="color:var(--danger); font-size:0.7rem;">${it.serials.length} ID(s) for ${it.qty} unit(s)</span>` : ''}
+      </td>
+      <td style="text-align:center;">${it.gst}%</td>
+      <td style="text-align:center;">
+        <input type="number" min="0" value="${it.qty}" style="width:58px; padding:5px; text-align:center; border:1px solid var(--border); border-radius:7px;"
+               oninput="editAiStagingField(${idx}, 'qty', this.value)">
+      </td>
+      <td style="text-align:right;">
+        <input type="number" min="0" step="0.01" value="${it.cost}" style="width:84px; padding:5px; text-align:right; border:1px solid var(--border); border-radius:7px;"
+               oninput="editAiStagingField(${idx}, 'cost', this.value)">
+      </td>
+      <td style="text-align:center;">
+        <button class="btn-pill secondary" style="padding:4px 9px; font-size:0.7rem;" onclick="discardAiStagingItem(${idx})">Drop</button>
+      </td>
+    </tr>`;
+  }).join('');
 }
 
-function commitSingleAiItem(idx) {
+// Every extracted value stays editable. OCR is a first draft, not an
+// authority — the shop owner looking at the paper bill is.
+function editAiStagingField(idx, field, value) {
   const it = APP_STATE.aiStagingItems[idx];
   if (!it) return;
+  const n = parseFloat(value);
+  it[field] = isFinite(n) && n >= 0 ? n : 0;
+}
 
-  let targetItem;
-  const existing = APP_STATE.inventory.find(i => i.name.toLowerCase() === it.name.toLowerCase());
-  if (existing) {
-    existing.stock += it.qty;
-    existing.cost = it.cost;
-    if (it.identifier && it.identifier !== '-') {
-      if (existing.category === 'Electronics') {
-        existing.serials = Array.isArray(existing.serials) ? existing.serials : [];
-        if (!existing.serials.includes(it.identifier)) existing.serials.push(it.identifier);
-      } else if (existing.category === 'Jewelry') {
-        existing.huids = Array.isArray(existing.huids) ? existing.huids : [];
-        if (!existing.huids.includes(it.identifier)) existing.huids.push(it.identifier);
-      }
-    }
-    targetItem = existing;
-  } else {
-    targetItem = {
-      id: crypto.randomUUID(),
-      name: it.name,
-      category: it.name.includes('Gold') ? 'Jewelry' : 'Electronics',
-      barcode: it.barcode || '',
-      hsn: it.hsn,
-      gst: it.gst,
-      cost: it.cost,
-      price: it.cost * 1.2,
-      stock: it.qty,
-      serials: it.identifier !== '-' && !it.name.includes('Gold') ? [it.identifier] : [],
-      huids: it.identifier !== '-' && it.name.includes('Gold') ? [it.identifier] : [],
-      batches: [],
-      meta: { imei: it.identifier !== '-' ? it.identifier : '' }
-    };
-    APP_STATE.inventory.push(targetItem);
-  }
-
+function discardAiStagingItem(idx) {
   APP_STATE.aiStagingItems.splice(idx, 1);
   renderAiStagingTable();
-  persistState();
-  syncItemToCloud(targetItem);
-  renderCatalog();
+  if (!APP_STATE.aiStagingItems.length) setDisplay('aiStagingSection', 'none');
 }
 
-function commitAllAiItems() {
-  while (APP_STATE.aiStagingItems.length > 0) {
-    commitSingleAiItem(0);
+/* Commits the whole reviewed bill: stock in, purchase recorded, vendor
+   payables updated — one confirmation, one atomic server call. */
+function commitAiBill() {
+  const staged = APP_STATE.aiStagingItems || [];
+  if (!staged.length) { showSaasToast('Nothing to merge.', 3000, 'err'); return; }
+
+  const zeroQty = staged.filter(i => i.qty <= 0);
+  if (zeroQty.length) {
+    showSaasToast(`${zeroQty.length} line(s) have quantity 0 — set a quantity or drop them first.`, 5000, 'err');
+    return;
   }
+
+  const header = APP_STATE.aiBill?.bill_header || {};
+  const purchaseLines = [];
+
+  staged.forEach(st => {
+    let target = st.matchedId ? APP_STATE.inventory.find(i => i.id === st.matchedId) : null;
+
+    if (target) {
+      target.stock += st.qty;
+      if (st.cost > 0) target.cost = st.cost;
+      if (st.hsn) target.hsn = st.hsn;
+    } else {
+      // Category is inferred from which identifier type the bill carried —
+      // a batch+expiry is a pharmacy line, a HUID is jewellery, a 15-digit
+      // IMEI is electronics. Better than defaulting everything to one.
+      const category =
+        st.huid ? 'Jewelry'
+        : (st.batch || st.expiry) ? 'Pharmacy'
+        : st.serials.some(s => /^\d{15}$/.test(s)) ? 'Electronics'
+        : (APP_STATE.tenantProfile.assignedIndustry !== 'All'
+            ? APP_STATE.tenantProfile.assignedIndustry : 'Grocery');
+
+      target = {
+        id: crypto.randomUUID(),
+        name: st.name, category, barcode: '',
+        hsn: st.hsn || APP_STATE.tenantProfile.defaultHsn || '',
+        gst: st.gst, cost: st.cost,
+        price: st.cost > 0 ? TaxEngine.round2(st.cost * 1.2) : 0,
+        stock: st.qty,
+        serials: [], huids: [], batches: [], meta: {}
+      };
+      APP_STATE.inventory.push(target);
+    }
+
+    // Attach identifiers to the right pool for the item's category.
+    if (st.serials.length) {
+      if (target.category === 'Jewelry') {
+        target.huids = target.huids || [];
+        st.serials.forEach(v => { if (!target.huids.includes(v)) target.huids.push(v); });
+      } else {
+        target.serials = target.serials || [];
+        st.serials.forEach(v => { if (!target.serials.includes(v)) target.serials.push(v); });
+      }
+    }
+    if (st.huid && !(target.huids || []).includes(st.huid)) {
+      target.huids = target.huids || [];
+      target.huids.push(st.huid);
+    }
+    if (st.batch) {
+      target.batches = target.batches || [];
+      target.batches.push({ batch: st.batch, expiry: st.expiry || '', stock: st.qty });
+    }
+
+    syncItemToCloud(target);
+
+    purchaseLines.push({
+      id: target.id, name: target.name, hsn: target.hsn, gst: st.gst,
+      qty: st.qty, cost: st.cost, price: target.price,
+      identifier: st.serials[0] || st.batch || st.huid || '',
+      expiry: st.expiry || ''
+    });
+  });
+
+  recordPurchaseBill({
+    vendor: {
+      name: header.vendor_name || 'Unknown Supplier',
+      gstin: header.supplier_gstin || '',
+      stateCode: (header.supplier_gstin || '').slice(0, 2)
+    },
+    billNo: header.invoice_number || '',
+    items: purchaseLines,
+    source: 'ai_ocr'
+  });
+
+  persistState();
+  APP_STATE.aiStagingItems = [];
+  APP_STATE.aiBill = null;
+  setDisplay('aiStagingSection', 'none');
   closeInwardModal();
-  alert("🎉 All AI Invoiced items merged into stock!");
+  renderCatalog();
+  renderAlertCentre();
+  showSaasToast(`${purchaseLines.length} item(s) merged into stock and the supplier bill recorded.`, 4500);
 }
+
+/* commitSingleAiItem / commitAllAiItems removed — superseded by
+   commitAiBill(), which merges the whole reviewed bill atomically and
+   records the supplier invoice behind it. */
+
 
 /* ==========================================================================
    DYNAMIC IDENTIFIER MODAL (ELECTRONICS / PHARMA / JEWELRY)
    ========================================================================== */
 function openItemModal(item) {
+  // Out of stock: for pharmacy, surface same-molecule alternatives instead
+  // of a dead end. Non-blocking — the cashier can still bill it if the shop
+  // allows negative stock, or pick a suggestion.
+  if (item.stock <= 0) {
+    if (item.category === 'Pharmacy') {
+      showAlternativesFor(item);
+      const alts = findAlternatives(item);
+      if (alts.length) return; // suggestions shown; let the cashier choose
+    }
+    showSaasToast(`${item.name} is out of stock.`, 3000, 'err');
+    return;
+  }
+
+  // Near-expiry warning at the point of sale, not just on the dashboard —
+  // a batch about to expire should be flagged while it's being dispensed.
+  const nearExp = getExpiryAlerts().filter(e => e.itemId === item.id);
+  if (nearExp.length) {
+    const worst = nearExp[0];
+    showSaasToast(worst.expired
+      ? `Batch ${worst.batch} of ${item.name} EXPIRED ${Math.abs(worst.days)} day(s) ago — do not dispense.`
+      : `Batch ${worst.batch} of ${item.name} expires in ${worst.days} day(s).`,
+      5000, worst.expired ? 'err' : 'ok');
+  }
+
   APP_STATE.stagingItem = JSON.parse(JSON.stringify(item));
   const modal = document.getElementById('attrModal');
   setTxt('attrModalTitle', `${item.name} (${item.category})`);
@@ -1799,7 +2266,7 @@ function commitModalItem() {
 
   // Real enforcement for "Mandatory HSN on All Items".
   if (p.mandatoryHsn && !String(it.hsn || '').trim()) {
-    showSaasToast(`"${it.name}" has no HSN/SAC code. Add one in Stock Master, or turn this rule off in Settings → GST & Tax Rates.`, 5000, 'err');
+    showSaasToast(`"${esc(it.name)}" has no HSN/SAC code. Add one in Stock Master, or turn this rule off in Settings → GST & Tax Rates.`, 5000, 'err');
     return;
   }
 
@@ -1833,7 +2300,7 @@ function renderCart() {
 
     tbody.innerHTML += `
       <tr>
-        <td><strong>${it.name}</strong><br><small style="color:var(--text-muted);">${it.assignedIdentifier ? 'ID: ' + it.assignedIdentifier : 'Untracked'} • ${it.gst}% GST</small></td>
+        <td><strong>${esc(it.name)}</strong><br><small style="color:var(--text-muted);">${it.assignedIdentifier ? 'ID: ' + it.assignedIdentifier : 'Untracked'} • ${it.gst}% GST</small></td>
         <td>${it.qty}</td>
         <td>₹${it.price.toFixed(2)}</td>
         <td><strong>₹${it.totalAmount.toFixed(2)}</strong></td>
@@ -1900,35 +2367,273 @@ function jumpToStep(n) {
 // possible on a dropped connection) can leave stock un-decremented for an
 // invoice that did save. Low-cost fix for now; the real fix is a single
 // Postgres function that does both atomically — flag if you want that next.
+// Fires after the sale is already printed/complete locally — never blocks
+// the counter on network. On any failure this falls back to the offline
+// queue, retried by flushSyncQueue() next time the app is online.
+//
+// SB.saveSale() calls create_invoice_atomic, which does ALL THREE of:
+// insert invoice, decrement every line's stock, upsert the customer ledger —
+// inside one Postgres transaction. Nothing else belongs here.
+//
+// This function previously ALSO looped SB.decrementStock() and called
+// SB.upsertCustomer() after saveSale. Two real bugs resulted:
+//   1. Every online sale decremented stock TWICE (once in the RPC, once in
+//      the loop), so inventory drained at double the real rate.
+//   2. The upsert passed `dues: existing.dues` — the pre-sale balance — which
+//      overwrote the value the RPC had just correctly incremented, silently
+//      erasing the debt from every Khata (credit) sale.
 async function syncInvoiceToCloud(invoice) {
   if (!APP_STATE.cloudSession) { SyncEngine.enqueue(invoice); return; }
   const shopId = APP_STATE.tenantProfile.shopId;
 
   try {
-    const { error: saveErr } = await SB.saveSale(shopId, invoice);
-    if (saveErr && !saveErr.includes('duplicate key')) throw new Error(saveErr);
+    const { data, error } = await SB.saveSale(shopId, invoice);
 
-    for (const it of invoice.items) {
-      const { error: stockErr } = await SB.decrementStock(it.id, it.qty);
-      if (stockErr) console.warn('Stock decrement failed for', it.name, stockErr);
-    }
+    // A duplicate idempotency_key means this exact sale is already committed
+    // (a retry landed twice). That's success, not failure — re-queuing it
+    // would loop forever.
+    if (isFatalSyncError(error)) throw new Error(error);
 
-    if (invoice.customer.phone !== '-') {
-      const existing = APP_STATE.customers.find(c => c.phone === invoice.customer.phone);
-      await SB.upsertCustomer(shopId, {
-        phone: invoice.customer.phone,
-        name: invoice.customer.name,
-        gstin: invoice.customer.gstin || null,
-        dues: existing ? existing.dues : 0,
-        total_orders_val: existing ? existing.totalOrdersVal : 0,
-      });
+    // Keep the server-assigned row id so returns can be raised against this
+    // invoice without a round-trip to look it up.
+    if (data && data.sale_id) {
+      invoice.cloudId = data.sale_id;
+      const local = APP_STATE.sales.find(s => s.idempotency_key === invoice.idempotency_key);
+      if (local) local.cloudId = data.sale_id;
+      persistState();
     }
+    updateSyncIndicator();
   } catch (err) {
     console.warn('Cloud sync failed, queued for retry:', err.message);
     SyncEngine.enqueue(invoice);
+    updateSyncIndicator();
   }
 }
 
+
+
+
+/* ==========================================================================
+   SHOP LOGO
+   Downscaled to 256×256 and re-encoded before storage. An unprocessed phone
+   photo is 3–8MB of base64 — that would be written to localStorage on every
+   persistState(), shipped in every shop row, and re-parsed on every load.
+   256px is beyond what either A4 print (≈20mm) or a 58/80mm thermal head
+   (≈384px wide, 1-bit) can resolve, so nothing visible is lost.
+   ========================================================================== */
+const LOGO_MAX_PX = 256;
+
+function handleLogoUpload(event) {
+  const file = event.target.files && event.target.files[0];
+  if (!file) return;
+
+  if (!/^image\/(png|jpeg|webp)$/.test(file.type)) {
+    setTxt('logoStatus', 'Use a PNG, JPG or WebP image.');
+    return;
+  }
+  if (file.size > 8 * 1024 * 1024) {
+    setTxt('logoStatus', 'That image is over 8MB — pick a smaller one.');
+    return;
+  }
+
+  setTxt('logoStatus', 'Processing…');
+  const reader = new FileReader();
+  reader.onload = () => {
+    const img = new Image();
+    img.onload = () => {
+      const scale = Math.min(LOGO_MAX_PX / img.width, LOGO_MAX_PX / img.height, 1);
+      const w = Math.round(img.width * scale);
+      const h = Math.round(img.height * scale);
+
+      const canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      // White matte behind transparent PNGs: a thermal printer and a printed
+      // A4 both render transparency as black, turning a clean logo into a blob.
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fillRect(0, 0, w, h);
+      ctx.drawImage(img, 0, 0, w, h);
+
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+      APP_STATE.tenantProfile.logo = dataUrl;
+      persistState();
+      applyShopLogo();
+      setTxt('logoStatus', `Saved · ${w}×${h}px · ${Math.round(dataUrl.length / 1024)}KB`);
+
+      if (APP_STATE.cloudSession && APP_STATE.tenantProfile.shopId) {
+        SB.updateShopSettings(APP_STATE.tenantProfile.shopId, { logo: dataUrl });
+      }
+    };
+    img.onerror = () => setTxt('logoStatus', "That file couldn't be read as an image.");
+    img.src = reader.result;
+  };
+  reader.onerror = () => setTxt('logoStatus', 'Could not read the file.');
+  reader.readAsDataURL(file);
+}
+
+function removeShopLogo() {
+  APP_STATE.tenantProfile.logo = '';
+  persistState();
+  applyShopLogo();
+  setTxt('logoStatus', 'Logo removed.');
+  if (APP_STATE.cloudSession && APP_STATE.tenantProfile.shopId) {
+    SB.updateShopSettings(APP_STATE.tenantProfile.shopId, { logo: null });
+  }
+}
+
+// Paints the logo everywhere it appears, with a clean initial-letter
+// fallback so a shop that never uploads one still looks finished.
+function applyShopLogo() {
+  const p = APP_STATE.tenantProfile;
+  const logo = p.logo || '';
+  const initial = (p.shopName || 'B').trim().slice(0, 2).toUpperCase();
+
+  const preview = document.getElementById('logoPreview');
+  if (preview) {
+    preview.innerHTML = logo
+      ? `<img src="${logo}" alt="Shop logo">`
+      : esc(initial);
+  }
+  const removeBtn = document.getElementById('logoRemoveBtn');
+  if (removeBtn) removeBtn.style.display = logo ? 'inline-flex' : 'none';
+
+  const pLogo = document.getElementById('pLogo');
+  if (pLogo) {
+    if (logo) { pLogo.src = logo; pLogo.style.display = 'block'; }
+    else { pLogo.style.display = 'none'; }
+  }
+
+  const sidebarLogo = document.getElementById('sidebarLogoBox');
+  if (sidebarLogo) {
+    sidebarLogo.innerHTML = logo
+      ? `<img src="${logo}" alt="" style="width:100%; height:100%; object-fit:cover; border-radius:inherit;">`
+      : esc(initial.slice(0, 1));
+  }
+}
+
+/* Stock/expiry alert calculations live in alertEngine.js (loaded first). */
+
+function renderAlertCentre() {
+  const low = getLowStockItems();
+  const exp = getExpiryAlerts();
+  const total = low.length + exp.length;
+
+  const badge = document.getElementById('alertBadge');
+  if (badge) {
+    badge.innerText = total > 99 ? '99+' : String(total);
+    badge.style.display = total ? 'inline-flex' : 'none';
+  }
+
+  const panel = document.getElementById('alertPanelBody');
+  if (!panel) return;
+
+  if (!total) {
+    panel.innerHTML = `<div class="empty-state" style="padding:26px;">
+      <div class="es-ico">✓</div><h4>Nothing needs attention</h4>
+      <p>Stock levels and batch expiry all look healthy.</p></div>`;
+    return;
+  }
+
+  let html = '';
+
+  if (exp.length) {
+    const expired = exp.filter(e => e.expired).length;
+    html += `<div class="alert-group">
+      <h5>Expiry${expired ? ` · ${expired} already expired` : ''}</h5>` +
+      exp.slice(0, 15).map(e => `
+        <button class="alert-row" onclick="switchView('inventory')">
+          <span class="alert-ico ${e.expired ? 'danger' : 'warn'}">${e.expired ? '!' : '⏱'}</span>
+          <span class="alert-body">
+            <strong>${esc(e.name)}</strong>
+            <small>Batch ${esc(e.batch || '—')} · ${e.expired
+              ? `expired ${Math.abs(e.days)} day(s) ago`
+              : `expires in ${e.days} day(s)`} · ${e.stock} in stock</small>
+          </span>
+        </button>`).join('') + `</div>`;
+  }
+
+  if (low.length) {
+    const totalMatching = filtered.length;
+  const pageLimit = APP_STATE.catalogPage * PAGE_SIZE;
+  const visible = filtered.slice(0, pageLimit);
+
+  const { lowStock } = getAlertThresholds();
+    html += `<div class="alert-group">
+      <h5>Low stock · threshold ${lowStock}</h5>` +
+      low.slice(0, 15).map(i => `
+        <button class="alert-row" onclick="switchView('inventory')">
+          <span class="alert-ico ${i.stock === 0 ? 'danger' : 'warn'}">${i.stock === 0 ? '0' : i.stock}</span>
+          <span class="alert-body">
+            <strong>${esc(i.name)}</strong>
+            <small>${i.stock === 0 ? 'Out of stock' : `${i.stock} left`} · reorder level ${
+              Number.isFinite(i.lowStockLevel) ? i.lowStockLevel : lowStock}</small>
+          </span>
+        </button>`).join('') + `</div>`;
+  }
+
+  panel.innerHTML = html;
+}
+
+function toggleAlertPanel() {
+  const panel = document.getElementById('alertPanel');
+  if (!panel) return;
+  const opening = !panel.classList.contains('open');
+  panel.classList.toggle('open', opening);
+  if (opening) renderAlertCentre();
+}
+
+function saveAlertSettings() {
+  const p = APP_STATE.tenantProfile;
+  const low = parseInt(document.getElementById('cfgLowStock')?.value, 10);
+  const days = parseInt(document.getElementById('cfgExpiryDays')?.value, 10);
+  p.lowStockThreshold = Number.isFinite(low) && low >= 0 ? low : 5;
+  p.expiryWarnDays = Number.isFinite(days) && days >= 0 ? days : 30;
+  persistState();
+  renderAlertCentre();
+  renderDashboard();
+  showSaasToast('Alert thresholds saved.', 2500);
+}
+
+/* Composition matching lives in alertEngine.js (loaded first). */
+
+function showAlternativesFor(item) {
+  const alts = findAlternatives(item);
+  const box = document.getElementById('altSuggestBox');
+  if (!box) return;
+
+  if (!alts.length) {
+    box.style.display = 'none';
+    return;
+  }
+
+  box.style.display = 'block';
+  box.innerHTML = `
+    <div class="alt-head">
+      <strong>${esc(item.name)} is out of stock</strong>
+      <button onclick="document.getElementById('altSuggestBox').style.display='none'" aria-label="Dismiss">✕</button>
+    </div>
+    <p class="alt-sub">In-stock alternatives with the same composition:</p>
+    ${alts.map(({ alt, exact }) => `
+      <button class="alt-row" onclick="selectAlternative('${esc(alt.id)}')">
+        <span class="alt-body">
+          <strong>${esc(alt.name)}</strong>
+          <small>${esc(alt.meta?.composition || alt.composition || '')} · ${alt.stock} in stock</small>
+        </span>
+        <span class="alt-tags">
+          ${exact ? '<span class="pill paid">Same salt</span>' : '<span class="pill info">Similar</span>'}
+          <span class="alt-price">₹${(alt.price || 0).toFixed(2)}</span>
+        </span>
+      </button>`).join('')}
+    <p class="alt-foot">Suggestions only — confirm suitability before dispensing.</p>`;
+}
+
+function selectAlternative(itemId) {
+  const item = (APP_STATE.inventory || []).find(i => i.id === itemId);
+  if (!item) return;
+  const box = document.getElementById('altSuggestBox');
+  if (box) box.style.display = 'none';
+  openItemModal(item);
+}
 
 /* ==========================================================================
    SALES RETURNS / CREDIT NOTES
@@ -1995,8 +2700,8 @@ function renderReturnModal() {
     const disabled = l.returnableQty === 0;
     return `<tr${disabled ? ' style="opacity:.45;"' : ''}>
       <td>
-        <strong>${l.name}</strong>
-        ${l.assignedIdentifier ? `<br><small style="color:var(--text-muted);">${l.assignedIdentifier}</small>` : ''}
+        <strong>${esc(l.name)}</strong>
+        ${l.assignedIdentifier ? `<br><small style="color:var(--text-muted);">${esc(l.assignedIdentifier)}</small>` : ''}
       </td>
       <td style="text-align:center;">${l.soldQty}</td>
       <td style="text-align:center;">${l.returnableQty}</td>
@@ -2113,15 +2818,24 @@ async function submitReturn() {
   localStorage.setItem('bn_cn_seq', String(APP_STATE.cnCounter));
   persistState();
 
-  if (APP_STATE.cloudSession && d.sale.cloudId) {
-    const { error } = await SB.processReturn(APP_STATE.tenantProfile.shopId, d.sale.cloudId, ret);
-    if (error) {
-      showSaasToast(`Saved locally. Cloud sync failed: ${error}`, 5000, 'err');
+  // Same offline-first contract as a sale: never block the counter on
+  // network, always end up on the queue if the write doesn't land.
+  ret.cloudSaleId = d.sale.cloudId || null;
+
+  if (APP_STATE.cloudSession && navigator.onLine && ret.cloudSaleId) {
+    const { error } = await SB.processReturn(APP_STATE.tenantProfile.shopId, ret.cloudSaleId, ret);
+    if (isFatalSyncError(error)) {
+      SyncEngine.enqueue(ret, 'return');
+      showSaasToast(`Credit note ${esc(creditNoteNo)} saved locally — will sync when possible.`, 4500);
     } else {
-      showSaasToast(`Credit note ${creditNoteNo} created. Stock ${restock ? 'restored' : 'not restored (damaged)'}.`, 4000);
+      showSaasToast(`Credit note ${esc(creditNoteNo)} created. Stock ${restock ? 'restored' : 'not restored (damaged)'}.`, 4000);
     }
   } else {
-    showSaasToast(`Credit note ${creditNoteNo} created locally.`, 3500);
+    // No session, offline, or the parent invoice hasn't synced yet — queue it.
+    // flushSyncQueue() holds returns back until their parent sale has a
+    // cloud id, so ordering is preserved without extra bookkeeping here.
+    SyncEngine.enqueue(ret, 'return');
+    showSaasToast(`Credit note ${esc(creditNoteNo)} saved locally — will sync when online.`, 4000);
   }
 
   if (btn) { btn.disabled = false; btn.innerText = 'Process Return'; }
@@ -2169,7 +2883,22 @@ function applyReturnLocally(ret, restock) {
 /* ==========================================================================
    CHECKOUT, OFFLINE SYNC & INVOICE PRINTER
    ========================================================================== */
-function checkoutBill() {
+// Reserves the next invoice number. Online, this comes from the server
+// (next_invoice_number RPC) so two devices in the same shop can never mint
+// the same number. Offline, it falls back to the local counter — a collision
+// is then possible but is reconciled on the next cloud load, and a blocked
+// sale at the counter is a worse outcome than a number that shifts later.
+async function reserveInvoiceNumber() {
+  if (navigator.onLine && APP_STATE.cloudSession && APP_STATE.tenantProfile.shopId) {
+    try {
+      const { data, error } = await SB.nextInvoiceNumber(APP_STATE.tenantProfile.shopId);
+      if (!error && data) return data;
+    } catch (e) { /* fall through to local */ }
+  }
+  return `INV-${APP_STATE.invCounter}`;
+}
+
+async function checkoutBill() {
   if (!APP_STATE.cart.length) return alert("Cart is empty!");
   const phone = document.getElementById('custPhone')?.value.trim() || '-';
   const name = document.getElementById('custName')?.value.trim() || 'Cash Customer';
@@ -2190,7 +2919,7 @@ function checkoutBill() {
   });
 
   const invoice = {
-    invoiceNo: `INV-${APP_STATE.invCounter}`,
+    invoiceNo: await reserveInvoiceNumber(),
     idempotency_key: SyncEngine.generateIdempotencyKey(),
     date: new Date().toLocaleDateString('en-IN'),
     timestamp: new Date().toISOString(),
@@ -2245,7 +2974,7 @@ function checkoutBill() {
     cust.orderHistory.push({
       invoiceNo: invoice.invoiceNo,
       date: invoice.date,
-      items: invoice.items.map(i => `${i.name} (${i.assignedIdentifier || 'x' + i.qty})`).join(', '),
+      items: invoice.items.map(i => `${esc(i.name)} (${i.assignedIdentifier || 'x' + i.qty})`).join(', '),
       total: invoice.total,
       tender: invoice.tender,
       status: APP_STATE.selectedTender === 'Khata' ? 'DUE' : 'PAID'
@@ -2354,7 +3083,7 @@ function printA4Invoice(inv) {
     tbody.innerHTML += `
       <tr>
         <td style="text-align:center;">${idx + 1}</td>
-        <td>${it.name}</td>
+        <td>${esc(it.name)}</td>
         <td style="text-align:center;">${it.hsn}</td>
         <td>${it.assignedIdentifier || it.meta?.batch || '-'}</td>
         <td style="text-align:center;">${it.qty}</td>
@@ -2406,7 +3135,7 @@ function renderHsnTaxBreakup(inv, hsnBody) {
     if (interstate) {
       hsnBody.innerHTML += `
         <tr>
-          <td>${g.hsn}</td>
+          <td>${esc(g.hsn)}</td>
           <td style="text-align:right;">${g.taxable.toFixed(2)}</td>
           <td style="text-align:center;">${g.gstRate}%</td>
           <td style="text-align:right;">${g.igst.toFixed(2)}</td>
@@ -2415,7 +3144,7 @@ function renderHsnTaxBreakup(inv, hsnBody) {
     } else {
       hsnBody.innerHTML += `
         <tr>
-          <td>${g.hsn}</td>
+          <td>${esc(g.hsn)}</td>
           <td style="text-align:right;">${g.taxable.toFixed(2)}</td>
           <td style="text-align:center;">${(g.gstRate / 2)}%</td>
           <td style="text-align:right;">${g.cgst.toFixed(2)}</td>
@@ -2437,219 +3166,7 @@ function renderHsnTaxBreakup(inv, hsnBody) {
   }
 }
 
-/* ==========================================================================
-   PRINTER HARDWARE ENGINE (BLUETOOTH ESC/POS + THERMAL)
-   ========================================================================== */
-const PrinterEngine = {
-  device: null,
-  characteristic: null,
-  isBusy: false,
-
-  SERVICES: [
-    '000018f0-0000-1000-8000-00805f9b34fb',
-    '0000ff00-0000-1000-8000-00805f9b34fb',
-    '0000ffe0-0000-1000-8000-00805f9b34fb',
-    '49535343-fe7d-4ae5-8fa9-9fafd205e455',
-    'e7810a71-73ae-499d-8c15-faa9aef0c3f2'
-  ],
-
-  async connectThermalPrinter() {
-    if (!navigator.bluetooth) {
-      alert("Web Bluetooth is not supported. Use Chrome on Android or Desktop.");
-      return false;
-    }
-    try {
-      this.device = await navigator.bluetooth.requestDevice({
-        acceptAllDevices: true,
-        optionalServices: this.SERVICES
-      });
-
-      // A printer going out of range, running out of battery, or being
-      // switched off mid-shift is normal, everyday behaviour on a shop
-      // counter — without this listener, `this.characteristic` stays set
-      // to a dead reference and every future sale hangs on a doomed write
-      // before falling back to A4 print, making checkout feel slow/broken.
-      this.device.addEventListener('gattserverdisconnected', () => {
-        this.characteristic = null;
-        this.setStatus('⚠️ Printer disconnected. Reconnect from Settings, or sales will fall back to A4/PDF.', true);
-      });
-
-      const server = await this.device.gatt.connect();
-      const services = await server.getPrimaryServices();
-
-      for (const service of services) {
-        const chars = await service.getCharacteristics();
-        for (const c of chars) {
-          if (c.properties.writeWithoutResponse || c.properties.write) {
-            this.characteristic = c;
-            break;
-          }
-        }
-        if (this.characteristic) break;
-      }
-
-      if (!this.characteristic) {
-        this.setStatus('⚠️ Connected, but no writable print service found on this device.', true);
-        return false;
-      }
-
-      this.setStatus(`✅ Connected: ${this.device.name || 'Thermal Printer'}`, false);
-      return true;
-    } catch (err) {
-      // User cancelling the Bluetooth picker throws too — that's not a
-      // real error, just don't scare them with an alert for it.
-      if (err.name !== 'NotFoundError') alert("Pairing Error: " + err.message);
-      return false;
-    }
-  },
-
-  setStatus(msg, isWarning) {
-    const el = document.getElementById('printerStatusLine');
-    if (el) {
-      el.innerText = msg;
-      el.style.color = isWarning ? 'var(--danger)' : 'var(--success)';
-    }
-  },
-
-  // Wraps a printer write with a hard timeout — a dead-but-not-yet-noticed
-  // GATT link can otherwise hang the browser's operation for many seconds,
-  // during which the cashier is stuck staring at a frozen checkout screen.
-  async writeChunks(bytes) {
-    if (!this.characteristic) throw new Error("Printer not connected.");
-    const CHUNK = 120;
-    const withTimeout = (promise, ms) => Promise.race([
-      promise,
-      new Promise((_, reject) => setTimeout(() => reject(new Error('Printer write timed out')), ms)),
-    ]);
-
-    for (let i = 0; i < bytes.length; i += CHUNK) {
-      const slice = bytes.slice(i, i + CHUNK);
-      if (this.characteristic.properties.writeWithoutResponse) {
-        await withTimeout(this.characteristic.writeValueWithoutResponse(slice), 4000);
-      } else {
-        await withTimeout(this.characteristic.writeValue(slice), 4000);
-      }
-      await new Promise(r => setTimeout(r, 20));
-    }
-  },
-
-  buildEscPosPayload(inv, width = 80) {
-    const cols = width === 58 ? 32 : 48;
-    const enc = new TextEncoder();
-    const bytes = [];
-    const p = APP_STATE.tenantProfile;
-
-    const append = arr => bytes.push(...arr);
-    const text = str => append(enc.encode(str.replace(/₹/g, 'Rs.')));
-
-    append([0x1B, 0x40]);
-    append([0x1B, 0x61, 0x01]);
-    append([0x1B, 0x45, 0x01]);
-    text(`${p.shopName}\n`);
-    append([0x1B, 0x45, 0x00]);
-    text(`${p.address}\n`);
-    text(`GSTIN: ${p.gstin || 'Unregistered'}\n`);
-    text("-".repeat(cols) + "\n");
-
-    append([0x1B, 0x61, 0x00]);
-    text(`Bill: ${inv.invoiceNo} | Date: ${inv.date}\n`);
-    text(`Cust: ${inv.customer.name} (${inv.customer.phone})\n`);
-    text("-".repeat(cols) + "\n");
-
-    inv.items.forEach(it => {
-      text(`${it.name}\n`);
-      const tag = it.assignedIdentifier ? `[${it.assignedIdentifier}]` : '';
-      const qp = `${it.qty} x ${it.price.toFixed(2)}`;
-      const tot = `Rs.${it.totalAmount.toFixed(2)}`;
-      const pad = Math.max(1, cols - qp.length - tot.length);
-      text(`${qp}${' '.repeat(pad)}${tot}\n`);
-      if (tag) text(`  ${tag}\n`);
-    });
-
-    text("-".repeat(cols) + "\n");
-    append([0x1B, 0x45, 0x01]);
-    text(`GRAND TOTAL: Rs.${inv.total.toFixed(2)}\n`);
-    append([0x1B, 0x45, 0x00]);
-    text(`Mode: ${inv.tender.toUpperCase()}\n`);
-    text("=".repeat(cols) + "\n");
-    append([0x1B, 0x61, 0x01]);
-    text("Thank you! Visit Again\n");
-
-    // UPI payment line — a thermal printer can't render the QR bitmap
-    // reliably across models, but the ID itself is scannable/typeable.
-    if (p.upiId) {
-      text("-".repeat(cols) + "\n");
-      text(`Pay via UPI: ${p.upiId}\n`);
-    }
-    text("\n\n\n");
-
-    // Paper cut. GS V 66 0 = partial cut (leaves a small tab so the receipt
-    // doesn't drop on the floor); GS V 65 0 = full cut. Some cheap printers
-    // ignore cut commands entirely and just feed — harmless either way.
-    if (p.autoCut !== false) {
-      append(p.cutType === 'full' ? [0x1D, 0x56, 0x41, 0x00] : [0x1D, 0x56, 0x42, 0x00]);
-    }
-
-    // Cash drawer kick: ESC p m t1 t2. Pin 2 (m=0) is the near-universal
-    // default; a few drawers wire to pin 5 (m=1). Only fires for cash sales
-    // — popping the till on a UPI or card payment is how tills get skimmed,
-    // and it startles the cashier.
-    if (p.cashDrawer && inv.tender === 'Cash') {
-      append([0x1B, 0x70, p.drawerPin === '5' ? 0x01 : 0x00, 0x19, 0xFA]);
-    }
-
-    return new Uint8Array(bytes);
-  },
-
-  // Fired from Settings so a shop can confirm the drawer is wired correctly
-  // without having to ring up a real sale to test it.
-  async openCashDrawer() {
-    if (!this.characteristic) {
-      const ok = await this.connectThermalPrinter();
-      if (!ok) return;
-    }
-    const pin = APP_STATE.tenantProfile.drawerPin === '5' ? 0x01 : 0x00;
-    try {
-      await this.writeChunks(new Uint8Array([0x1B, 0x70, pin, 0x19, 0xFA]));
-      this.setStatus('Drawer pulse sent.', false);
-    } catch (err) {
-      this.setStatus(`Drawer pulse failed: ${err.message}`, true);
-    }
-  },
-
-  async dispatchPrint(inv) {
-    if (APP_STATE.tenantProfile.printerFormat === 'thermal') {
-      if (!this.characteristic) {
-        const ok = await this.connectThermalPrinter();
-        if (!ok) { window.print(); return; }
-      }
-      try {
-        const payload = this.buildEscPosPayload(inv, APP_STATE.tenantProfile.thermalWidth);
-        await this.writeChunks(payload);
-      } catch (err) {
-        this.characteristic = null; // stale/dead — force re-pair next attempt, don't keep retrying a dead link
-        this.setStatus(`⚠️ Thermal print failed (${err.message}). Printed via A4 instead.`, true);
-        window.print();
-      }
-    } else {
-      window.print();
-    }
-  },
-
-  async runPrinterDiagnosticTest() {
-    const demo = {
-      invoiceNo: "TEST-1001",
-      date: new Date().toLocaleDateString('en-IN'),
-      customer: { name: "Abhijit Roy", phone: "9876543210" },
-      tender: "Cash",
-      total: 19298.00,
-      items: [
-        { name: "Motorola G84 5G", qty: 1, price: 18999.00, totalAmount: 18999.00, assignedIdentifier: "864592039481920" }
-      ]
-    };
-    await this.dispatchPrint(demo);
-  }
-};
+/* PrinterEngine lives in printerEngine.js (loaded before this file). */
 
 /* ==========================================================================
    REPORTS & DASHBOARD CONTROLLER
@@ -2676,7 +3193,7 @@ function openReport(reportKey) {
   if (isC360) {
     const dd = document.getElementById('cust360Dropdown');
     if (dd) {
-      dd.innerHTML = APP_STATE.customers.map(c => `<option value="${c.phone}">${c.name} (${c.phone})</option>`).join('');
+      dd.innerHTML = APP_STATE.customers.map(c => `<option value="${esc(c.phone)}">${esc(c.name)} (${esc(c.phone)})</option>`).join('');
       renderCustomer360Profile(dd.value);
     }
   } else {
@@ -2684,6 +3201,95 @@ function openReport(reportKey) {
   }
 }
 
+
+
+/* ==========================================================================
+   SUBSCRIPTION & BILLING PANEL
+   Plan, price and feature list are read from subscription_plans in
+   Supabase, never hardcoded — the "app is free for now" state is a row
+   (id='free', all_features_unlocked=true), not an absence of gating logic.
+   Changing what a shop is allowed to do later is a database update from
+   the backend, not a client deploy.
+   ========================================================================== */
+async function loadSubscriptionPanel() {
+  const block = document.getElementById('currentPlanBlock');
+  if (!APP_STATE.cloudSession || !APP_STATE.tenantProfile.shopId) {
+    setTxt('planName', 'Not signed in');
+    setDisplay('planFreeBanner', 'none');
+    return;
+  }
+
+  const [{ data: sub, error: subErr }, { data: plans }] = await Promise.all([
+    SB.fetchSubscription(APP_STATE.tenantProfile.shopId),
+    SB.fetchAllPlans()
+  ]);
+
+  if (subErr || !sub?.plan) {
+    setTxt('planName', 'Free Access');
+    setTxt('planPrice', '₹0 / month');
+    showSaasToast('Could not load live plan details — showing defaults.', 3500, 'err');
+    return;
+  }
+
+  const plan = sub.plan;
+  const usage = sub.usage || {};
+
+  setTxt('planName', plan.name);
+  setTxt('planPrice', plan.price_monthly > 0
+    ? `₹${Number(plan.price_monthly).toLocaleString('en-IN')} / month`
+    : 'Free');
+
+  const pill = document.getElementById('planStatusPill');
+  if (pill) { pill.className = 'pill paid'; pill.innerText = 'Active'; }
+
+  setTxt('planInvoiceUsage', plan.max_invoices_monthly
+    ? `${usage.invoices_this_month || 0} / ${plan.max_invoices_monthly}`
+    : `${usage.invoices_this_month || 0} (unlimited)`);
+  setTxt('planStaffUsage', plan.max_staff_accounts
+    ? `${usage.staff_accounts || 0} / ${plan.max_staff_accounts}`
+    : `${usage.staff_accounts || 0} (unlimited)`);
+
+  const featureList = document.getElementById('planFeatureList');
+  if (featureList) {
+    const features = Array.isArray(plan.features) ? plan.features : [];
+    featureList.innerHTML = features.map(f => `
+      <li style="display:flex; align-items:center; gap:8px;">
+        <span style="color:${f.included ? 'var(--mint-ink)' : 'var(--text-faint)'}; font-weight:800;">${f.included ? '✓' : '—'}</span>
+        <span style="color:${f.included ? 'var(--text-dark)' : 'var(--text-faint)'};">${esc(f.label)}</span>
+      </li>`).join('');
+  }
+
+  setDisplay('planFreeBanner', plan.all_features_unlocked ? 'block' : 'none');
+
+  // Other plans, shown but never clickable — is_purchasable stays false
+  // until the backend flips it, and this screen never fakes a checkout.
+  const otherList = document.getElementById('otherPlansList');
+  if (otherList) {
+    const others = (plans || []).filter(p => p.id !== plan.id);
+    otherList.innerHTML = others.length
+      ? others.map(p => `
+          <div style="border:1px solid var(--border); border-radius:11px; padding:13px 15px; display:flex; justify-content:space-between; align-items:center; gap:10px;">
+            <div>
+              <strong style="font-size:0.9rem;">${esc(p.name)}</strong>
+              <p style="font-size:0.78rem; color:var(--text-muted); margin-top:2px;">
+                ${p.price_monthly > 0 ? `₹${Number(p.price_monthly).toLocaleString('en-IN')}/month` : 'Free'}
+                ${p.max_staff_accounts ? ` · ${p.max_staff_accounts} staff` : ''}
+                ${p.max_invoices_monthly ? ` · ${p.max_invoices_monthly} invoices/mo` : ''}
+              </p>
+            </div>
+            <span class="pill draft">${p.is_purchasable ? 'Available' : 'Coming soon'}</span>
+          </div>`).join('')
+      : `<p class="settings-hint">No other plans published yet.</p>`;
+  }
+}
+
+// Client-side convenience check for future use — mirrors shop_has_feature()
+// server-side, which is the real enforcement point. This local copy is for
+// instant UI decisions (e.g. greying out a button) and must never be the
+// only gate on anything that touches money or data.
+function currentPlanUnlocksAll() {
+  return APP_STATE.subscriptionCache?.all_features_unlocked !== false; // default open while free
+}
 
 /* ==========================================================================
    DASHBOARD CARD DRILL-THROUGH
@@ -2765,11 +3371,11 @@ function renderDashDrillTable(key) {
     }
 
     return `<tr>
-      <td><strong>${s.invoiceNo}</strong></td>
+      <td><strong>${esc(s.invoiceNo)}</strong></td>
       <td>${s.date}</td>
-      <td>${s.customer?.name || 'Cash Customer'}</td>
-      <td>${s.customer?.phone || '-'}</td>
-      <td>${s.tender}</td>
+      <td>${esc(s.customer?.name || 'Cash Customer')}</td>
+      <td>${esc(s.customer?.phone || '-')}</td>
+      <td>${esc(s.tender)}</td>
       <td style="text-align:right;">₹${(s.taxable || 0).toFixed(2)}</td>
       <td style="text-align:right;">₹${(s.gstTotal || 0).toFixed(2)}</td>
       <td style="text-align:right; font-weight:700;">₹${(s.total || 0).toFixed(2)}</td>
@@ -2828,8 +3434,8 @@ function renderActiveReportData() {
       // visual weight rather than sitting as one number among four.
       const risk = r.b90 > 0 ? 'color:var(--danger); font-weight:800;' : '';
       tbody.innerHTML += `<tr>
-        <td><strong>${r.name}</strong></td>
-        <td>${r.phone}</td>
+        <td><strong>${esc(r.name)}</strong></td>
+        <td>${esc(r.phone)}</td>
         <td style="text-align:right;">${r.b30 ? '₹' + r.b30.toFixed(2) : '–'}</td>
         <td style="text-align:right;">${r.b60 ? '₹' + r.b60.toFixed(2) : '–'}</td>
         <td style="text-align:right;">${r.b90 ? '₹' + r.b90.toFixed(2) : '–'}</td>
@@ -2859,7 +3465,7 @@ function renderActiveReportData() {
       else if (Array.isArray(i.huids) && i.huids.length) idList = i.huids.join(', ');
       else if (Array.isArray(i.batches) && i.batches.length) idList = i.batches.map(b => `${b.batch} (${b.expiry})`).join(', ');
 
-      tbody.innerHTML += `<tr><td><strong>${i.name}</strong></td><td><code>${i.barcode || '-'}</code></td><td><code>${idList}</code></td><td>${i.category}</td><td>${i.stock}</td><td style="text-align:right;">₹${i.price.toFixed(2)}</td></tr>`;
+      tbody.innerHTML += `<tr><td><strong>${esc(i.name)}</strong></td><td><code>${esc(i.barcode || '-')}</code></td><td><code>${esc(idList)}</code></td><td>${esc(i.category)}</td><td>${i.stock}</td><td style="text-align:right;">₹${i.price.toFixed(2)}</td></tr>`;
     });
   } else if (APP_STATE.currentReportKey === 'gstr1') {
     // HSN-wise summary across ALL invoices, split by CGST/SGST vs IGST per
@@ -2873,7 +3479,7 @@ function renderActiveReportData() {
     const groups = {};
     APP_STATE.sales.forEach(inv => {
       TaxEngine.groupByHsn(inv.items || [], inv.interstate).forEach(g => {
-        const key = `${g.hsn}|${g.gstRate}`;
+        const key = `${esc(g.hsn)}|${g.gstRate}`;
         if (!groups[key]) groups[key] = { hsn: g.hsn, gst: g.gstRate, taxable: 0, cgst: 0, sgst: 0, igst: 0 };
         groups[key].taxable = TaxEngine.round2(groups[key].taxable + g.taxable);
         groups[key].cgst = TaxEngine.round2(groups[key].cgst + g.cgst);
@@ -2886,7 +3492,7 @@ function renderActiveReportData() {
     }
     Object.values(groups).forEach(g => {
       const totalTax = TaxEngine.round2(g.cgst + g.sgst + g.igst);
-      tbody.innerHTML += `<tr><td>${g.hsn}</td><td>${g.gst}%</td><td style="text-align:right;">₹${g.taxable.toFixed(2)}</td><td style="text-align:right;">₹${g.cgst.toFixed(2)}</td><td style="text-align:right;">₹${g.sgst.toFixed(2)}</td><td style="text-align:right;">₹${g.igst.toFixed(2)}</td><td style="text-align:right; font-weight:700;">₹${totalTax.toFixed(2)}</td></tr>`;
+      tbody.innerHTML += `<tr><td>${esc(g.hsn)}</td><td>${g.gst}%</td><td style="text-align:right;">₹${g.taxable.toFixed(2)}</td><td style="text-align:right;">₹${g.cgst.toFixed(2)}</td><td style="text-align:right;">₹${g.sgst.toFixed(2)}</td><td style="text-align:right;">₹${g.igst.toFixed(2)}</td><td style="text-align:right; font-weight:700;">₹${totalTax.toFixed(2)}</td></tr>`;
     });
   } else if (APP_STATE.currentReportKey === 'stock_summary') {
     const canSeeCost = APP_STATE.isOwner !== false;
@@ -2903,8 +3509,8 @@ function renderActiveReportData() {
       totalSellVal = TaxEngine.round2(totalSellVal + sellVal);
 
       tbody.innerHTML += canSeeCost
-        ? `<tr><td><strong>${i.name}</strong></td><td>${i.category}</td><td style="text-align:right;">${i.stock}</td><td style="text-align:right;">${fmtCost(i.cost)}</td><td style="text-align:right;">${fmtCost(costVal)}</td><td style="text-align:right;">₹${sellVal.toFixed(2)}</td></tr>`
-        : `<tr><td><strong>${i.name}</strong></td><td>${i.category}</td><td style="text-align:right;">${i.stock}</td><td style="text-align:right;">₹${(i.price || 0).toFixed(2)}</td><td style="text-align:right;">₹${sellVal.toFixed(2)}</td></tr>`;
+        ? `<tr><td><strong>${esc(i.name)}</strong></td><td>${esc(i.category)}</td><td style="text-align:right;">${i.stock}</td><td style="text-align:right;">${fmtCost(i.cost)}</td><td style="text-align:right;">${fmtCost(costVal)}</td><td style="text-align:right;">₹${sellVal.toFixed(2)}</td></tr>`
+        : `<tr><td><strong>${esc(i.name)}</strong></td><td>${esc(i.category)}</td><td style="text-align:right;">${i.stock}</td><td style="text-align:right;">₹${(i.price || 0).toFixed(2)}</td><td style="text-align:right;">₹${sellVal.toFixed(2)}</td></tr>`;
     });
 
     tbody.innerHTML += canSeeCost
@@ -2998,6 +3604,7 @@ function renderDashboard() {
   setTxt('dLegCancelled', pct(dueCount));
   renderDonutChart(pending.length, paid.length, dueCount);
   renderTrendChart();
+  renderAlertCentre();
 
   // Recent Invoices table
   const recentBody = document.getElementById('dashRecentOrdersBody');
@@ -3015,7 +3622,7 @@ function renderDashboard() {
         cls = ageDays > 30 ? 'overdue' : 'pending';
         label = ageDays > 30 ? `${ageDays}D OVERDUE` : 'DUE';
       }
-      recentBody.innerHTML += `<tr><td><strong>${s.invoiceNo}</strong></td><td>${s.customer?.name || 'Cash Customer'}</td><td>${s.date}</td><td><span class="pill ${cls}">${label}</span></td><td style="text-align:right; font-weight:700;">₹${(s.total || 0).toFixed(2)}</td></tr>`;
+      recentBody.innerHTML += `<tr><td><strong>${esc(s.invoiceNo)}</strong></td><td>${esc(s.customer?.name || 'Cash Customer')}</td><td>${s.date}</td><td><span class="pill ${cls}">${label}</span></td><td style="text-align:right; font-weight:700;">₹${(s.total || 0).toFixed(2)}</td></tr>`;
     });
   }
 
@@ -3024,7 +3631,7 @@ function renderDashboard() {
   if (topList) {
     const ranked = [...(APP_STATE.customers || [])].sort((a, b) => (b.totalOrdersVal || 0) - (a.totalOrdersVal || 0)).slice(0, 5);
     topList.innerHTML = ranked.length
-      ? ranked.map(c => `<div class="legend-row" style="padding:6px 0;"><div><strong>${c.name}</strong><br><small style="color:var(--text-muted);">${c.phone}</small></div><strong>₹${(c.totalOrdersVal || 0).toLocaleString('en-IN')}</strong></div>`).join('')
+      ? ranked.map(c => `<div class="legend-row" style="padding:6px 0;"><div><strong>${esc(c.name)}</strong><br><small style="color:var(--text-muted);">${esc(c.phone)}</small></div><strong>₹${(c.totalOrdersVal || 0).toLocaleString('en-IN')}</strong></div>`).join('')
       : `<p style="color:var(--text-muted); font-size:0.85rem;">No customer purchase history yet.</p>`;
   }
 }
@@ -3355,30 +3962,88 @@ function setTrendRange(days) {
   renderTrendChart();
 }
 
+
+/* ==========================================================================
+   PAGINATION  (P2 #11)
+   A shop with 4,000 SKUs was rendering 4,000 DOM nodes on every catalog
+   repaint — which is every add-to-cart. On a mid-range Android that is a
+   visible freeze at the counter. Chunked rendering with a "load more" keeps
+   the first paint bounded regardless of catalogue size, without pulling in
+   a virtual-list library.
+   ========================================================================== */
+const PAGE_SIZE = 60;
+APP_STATE.catalogPage = 1;
+
+function resetCatalogPaging() { APP_STATE.catalogPage = 1; }
+
+function loadMoreCatalog() {
+  APP_STATE.catalogPage++;
+  renderCatalog();
+}
+
+function renderPagerFooter(container, shown, total, onMoreFnName) {
+  if (shown >= total) return;
+  const footer = document.createElement('div');
+  footer.className = 'pager-footer';
+  footer.innerHTML = `
+    <span>Showing ${shown} of ${total}</span>
+    <button class="btn-pill secondary" onclick="${onMoreFnName}()">Load ${Math.min(PAGE_SIZE, total - shown)} more</button>`;
+  container.appendChild(footer);
+}
+
 function renderCatalog() {
   const container = document.getElementById('catalogGrid');
   if (!container) return;
   container.innerHTML = '';
   const filtered = APP_STATE.inventory.filter(i => APP_STATE.activeSector === 'All' || i.category === APP_STATE.activeSector);
 
-  filtered.forEach(it => {
+  const totalMatching = filtered.length;
+  const pageLimit = APP_STATE.catalogPage * PAGE_SIZE;
+  const visible = filtered.slice(0, pageLimit);
+
+  const { lowStock } = getAlertThresholds();
+  const expiryByItem = {};
+  getExpiryAlerts().forEach(e => {
+    // Keep only the most urgent batch per product for the card badge.
+    if (!expiryByItem[e.itemId] || e.days < expiryByItem[e.itemId].days) expiryByItem[e.itemId] = e;
+  });
+
+  visible.forEach(it => {
     const card = document.createElement('div');
-    card.className = 'catalog-card';
+    const threshold = Number.isFinite(it.lowStockLevel) ? it.lowStockLevel : lowStock;
+    const isOut = it.stock <= 0;
+    const isLow = !isOut && it.stock <= threshold;
+    const exp = expiryByItem[it.id];
+
+    card.className = `catalog-card${isOut ? ' is-out' : ''}${isLow ? ' is-low' : ''}`;
     card.onclick = () => openItemModal(it);
 
-    let tag = it.barcode ? `Barcode: ${it.barcode}` : `HSN: ${it.hsn}`;
+    const tag = it.barcode ? `Barcode: ${esc(it.barcode)}` : `HSN: ${esc(it.hsn)}`;
+    const comp = it.meta?.composition || it.composition || '';
+
+    const badges = [
+      isOut ? `<span class="mini-badge danger">Out of stock</span>` : '',
+      isLow ? `<span class="mini-badge warn">Low · ${it.stock} left</span>` : '',
+      exp ? `<span class="mini-badge ${exp.expired ? 'danger' : 'warn'}">${
+        exp.expired ? `Expired ${Math.abs(exp.days)}d ago` : `Expires in ${exp.days}d`}</span>` : ''
+    ].filter(Boolean).join('');
+
     card.innerHTML = `
       <div>
-        <div class="name">${it.name}</div>
+        <div class="name">${esc(it.name)}</div>
         <div class="meta">${tag} &bull; ${it.gst}% GST</div>
+        ${comp ? `<div class="meta comp">${esc(comp)}</div>` : ''}
+        ${badges ? `<div class="card-badges">${badges}</div>` : ''}
       </div>
       <div class="bottom">
         <span class="price">₹${it.price.toFixed(2)}</span>
-        <span class="stock-tag ${it.stock < 10 ? 'low' : ''}">${it.stock} left</span>
+        <span class="stock-tag ${isOut ? 'out' : (isLow ? 'low' : '')}">${it.stock} left</span>
       </div>
     `;
     container.appendChild(card);
   });
+
+  renderPagerFooter(container, visible.length, totalMatching, 'loadMoreCatalog');
 }
 
 function openNewProductModal() { document.getElementById('newProdModal')?.classList.add('open'); }
@@ -3442,144 +4107,7 @@ function handleGlobalSearch(q) {
   if (found) { switchView('pos'); openItemModal(found); }
 }
 
-/* ==========================================================================
-   CSV EXPORT ENGINE
-   ========================================================================== */
-function downloadCSV(filename, rows) {
-  // rows: array of arrays. Escapes quotes/commas per RFC 4180.
-  const csv = rows.map(row =>
-    row.map(cell => {
-      const s = (cell === null || cell === undefined) ? '' : String(cell);
-      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-    }).join(',')
-  ).join('\r\n');
-
-  const blob = new Blob(["\uFEFF" + csv], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-}
-
-
-/* ==========================================================================
-   EXPORT ENGINE — CSV + Excel
-   Excel output uses SpreadsheetML 2003 (.xls), which Excel, LibreOffice and
-   Google Sheets all open natively and which supports real column widths,
-   bold headers and number formatting. Deliberately NOT a .xlsx: that needs
-   a ZIP writer (~100KB of extra library) for cosmetic gain, and this app is
-   precached for offline use where every KB is downloaded on a shop's mobile
-   data. CSV remains available for anything a user wants to re-import.
-   ========================================================================== */
-function escXml(v) {
-  return String(v ?? '')
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;').replace(/'/g, '&apos;');
-}
-
-function exportToExcel(filename, sheetName, headers, rows, meta = {}) {
-  const isNum = v => typeof v === 'number' && isFinite(v);
-
-  const headerCells = headers.map(h =>
-    `<Cell ss:StyleID="hdr"><Data ss:Type="String">${escXml(h)}</Data></Cell>`
-  ).join('');
-
-  const bodyRows = rows.map(r => {
-    const cells = r.map(v => isNum(v)
-      ? `<Cell ss:StyleID="num"><Data ss:Type="Number">${v}</Data></Cell>`
-      : `<Cell><Data ss:Type="String">${escXml(v)}</Data></Cell>`
-    ).join('');
-    return `<Row>${cells}</Row>`;
-  }).join('');
-
-  // A title/context band above the table: an exported file that lands in
-  // someone's inbox with no indication of which shop or date range it
-  // covers is close to useless for an accountant.
-  const metaRows = [
-    ['Report', sheetName],
-    ['Shop', APP_STATE.tenantProfile.shopName || ''],
-    ['GSTIN', APP_STATE.tenantProfile.gstin || 'Unregistered'],
-    ['Generated', new Date().toLocaleString('en-IN')],
-    ...(meta.filter ? [['Filter', meta.filter]] : []),
-    ...(meta.range ? [['Period', meta.range]] : [])
-  ].map(([k, v]) =>
-    `<Row><Cell ss:StyleID="metaKey"><Data ss:Type="String">${escXml(k)}</Data></Cell>` +
-    `<Cell><Data ss:Type="String">${escXml(v)}</Data></Cell></Row>`
-  ).join('');
-
-  const cols = headers.map(() => `<Column ss:AutoFitWidth="1" ss:Width="120"/>`).join('');
-
-  const xml = `<?xml version="1.0"?>
-<?mso-application progid="Excel.Sheet"?>
-<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
- xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">
- <Styles>
-  <Style ss:ID="hdr">
-   <Font ss:Bold="1" ss:Color="#FFFFFF"/>
-   <Interior ss:Color="#6366D9" ss:Pattern="Solid"/>
-   <Alignment ss:Vertical="Center"/>
-  </Style>
-  <Style ss:ID="metaKey"><Font ss:Bold="1" ss:Color="#666666"/></Style>
-  <Style ss:ID="num"><NumberFormat ss:Format="#,##0.00"/></Style>
- </Styles>
- <Worksheet ss:Name="${escXml(sheetName).slice(0, 31)}">
-  <Table>
-   ${cols}
-   ${metaRows}
-   <Row></Row>
-   <Row>${headerCells}</Row>
-   ${bodyRows}
-  </Table>
- </Worksheet>
-</Workbook>`;
-
-  const blob = new Blob([xml], { type: 'application/vnd.ms-excel;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename.endsWith('.xls') ? filename : `${filename}.xls`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-}
-
-// Pulls whatever table is currently rendered in the drill-down and exports
-// exactly that — so what the user sees on screen and what lands in Excel
-// can never diverge, including any filter they applied.
-function exportCurrentViewToExcel() {
-  const theadRow = document.querySelector('#drillTableHead tr');
-  const bodyRows = document.querySelectorAll('#drillTableBody tr');
-  if (!theadRow || !bodyRows.length) {
-    showSaasToast('Nothing to export in this view.', 3000, 'err');
-    return;
-  }
-
-  const headers = Array.from(theadRow.children).map(th => th.innerText.trim());
-  const rows = [];
-  bodyRows.forEach(tr => {
-    const cells = Array.from(tr.children).map(td => {
-      const txt = td.innerText.trim();
-      // Convert "₹1,234.50" back to a real number so Excel can sum the
-      // column — a currency string exports as text and silently breaks
-      // every formula an accountant tries to write against it.
-      const numeric = txt.replace(/[₹,\s]/g, '');
-      return (numeric !== '' && numeric !== '-' && !isNaN(numeric)) ? parseFloat(numeric) : txt;
-    });
-    if (cells.length) rows.push(cells);
-  });
-
-  const title = document.getElementById('drillReportTitle')?.innerText || 'Report';
-  exportToExcel(
-    `${(APP_STATE.currentReportKey || 'report')}-${new Date().toISOString().slice(0, 10)}`,
-    title, headers, rows,
-    { filter: document.getElementById('drillFilterLabel')?.innerText || '' }
-  );
-}
+/* downloadCSV lives in exportEngine.js (loaded before this file). */
 
 function exportData(type) {
   if (type === 'khata') {
@@ -3665,6 +4193,23 @@ window.saveGstSlabs = saveGstSlabs;
 window.onPrinterFormatChange = onPrinterFormatChange;
 window.savePrinterSettings = savePrinterSettings;
 
+
+
+
+window.commitAiBill = commitAiBill;
+window.editAiStagingField = editAiStagingField;
+window.discardAiStagingItem = discardAiStagingItem;
+window.matchInventoryItem = matchInventoryItem;
+window.refreshFromCloud = refreshFromCloud;
+window.loadMoreCatalog = loadMoreCatalog;
+window.updateLastSyncedLabel = updateLastSyncedLabel;
+window.loadSubscriptionPanel = loadSubscriptionPanel;
+window.toggleAlertPanel = toggleAlertPanel;
+window.saveAlertSettings = saveAlertSettings;
+window.handleLogoUpload = handleLogoUpload;
+window.removeShopLogo = removeShopLogo;
+window.selectAlternative = selectAlternative;
+window.updateSyncIndicator = updateSyncIndicator;
 window.openReturnModal = openReturnModal;
 window.closeReturnModal = closeReturnModal;
 window.updateReturnQty = updateReturnQty;
@@ -3700,8 +4245,6 @@ window.closeInwardModal = closeInwardModal;
 window.toggleInwardMode = toggleInwardMode;
 window.saveManualPurchase = saveManualPurchase;
 window.processAiInvoice = processAiInvoice;
-window.commitSingleAiItem = commitSingleAiItem;
-window.commitAllAiItems = commitAllAiItems;
 window.openCameraScanner = openCameraScanner;
 window.closeCameraScanner = closeCameraScanner;
 window.openNewProductModal = openNewProductModal;
@@ -3791,6 +4334,11 @@ window.applyAppUpdate = applyAppUpdate;
 window.addEventListener('DOMContentLoaded', () => {
   populateStateDropdowns();
   loadPrinterAndGstSettingsIntoDOM();
+  applyShopLogo();
+  renderAlertCentre();
+  updateSyncIndicator();
+  window.addEventListener('online', updateSyncIndicator);
+  window.addEventListener('offline', updateSyncIndicator);
   setLoginMethod('email');
   initAuthGate();
   updateNetworkStatus();
