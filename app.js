@@ -652,6 +652,8 @@ function enterApp() {
   loadPrinterAndGstSettingsIntoDOM();
   renderDashboard();
   renderCatalog();
+  renderInventoryTable();
+  renderKhataGrid();
   SyncEngine.flushSyncQueue();
 }
 
@@ -721,6 +723,26 @@ function onPhoneInput() {
   const el = document.getElementById('loginPhone');
   if (el) el.value = el.value.replace(/\D/g, '').slice(0, 12);
   setTxt('phoneError', '');
+}
+
+// Legacy bridge for older popup integrations that still call
+// `sendLoginOtp(...)` instead of the current `requestOtp('phone')` flow.
+function sendLoginOtp(target, channel = 'phone', allowCreate = false) {
+  const nextChannel = channel === 'email' ? 'email' : 'phone';
+  const loginField = document.getElementById(nextChannel === 'phone' ? 'loginPhone' : 'loginEmail');
+  if (loginField) loginField.value = target || '';
+
+  AuthFlow.channel = nextChannel;
+  AuthFlow.purpose = 'login';
+  if (nextChannel === 'phone') {
+    const digits = normalizePhoneNumber(target || '').replace(/\D/g, '');
+    AuthFlow.target = `${AuthFlow.dialCode}${digits}`;
+    document.getElementById('loginPhone').value = digits;
+  } else {
+    AuthFlow.target = String(target || '').trim();
+  }
+
+  return requestOtp(nextChannel, allowCreate);
 }
 
 /* ---------- request OTP ---------- */
@@ -3553,6 +3575,8 @@ function switchView(viewName, el) {
 
   if (viewName === 'dashboard') renderDashboard();
   if (viewName === 'pos') renderCatalog();
+  if (viewName === 'inventory') renderInventoryTable();
+  if (viewName === 'khata') renderKhataGrid();
   if (viewName === 'reports') closeReportDetail();
 }
 
@@ -3564,6 +3588,77 @@ function filterReportsCategory(cat, btn) {
     const cardCats = c.getAttribute('data-cat') || '';
     c.style.display = (cat === 'All' || cardCats.includes(cat)) ? 'flex' : 'none';
   });
+}
+
+function renderInventoryTable() {
+  const tbody = document.getElementById('invTableBody');
+  if (!tbody) return;
+
+  const rows = [...(APP_STATE.inventory || [])].sort((a, b) => a.name.localeCompare(b.name));
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="7" style="text-align:center; color:var(--text-muted); padding:20px;">No stock items yet.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = rows.map(item => {
+    const low = Number.isFinite(item.lowStockLevel) ? item.lowStockLevel : (APP_STATE.tenantProfile?.lowStockThreshold ?? 5);
+    const stockState = item.stock <= 0 ? 'Out' : item.stock <= low ? 'Low' : 'OK';
+    const stateClass = item.stock <= 0 ? 'danger' : item.stock <= low ? 'warn' : 'ok';
+    const identifier = Array.isArray(item.serials) && item.serials.length
+      ? item.serials.slice(0, 2).join(', ') + (item.serials.length > 2 ? '…' : '')
+      : Array.isArray(item.huids) && item.huids.length
+        ? item.huids.slice(0, 2).join(', ') + (item.huids.length > 2 ? '…' : '')
+        : Array.isArray(item.batches) && item.batches.length
+          ? item.batches.map(b => `${b.batch || 'Batch'}${b.expiry ? ` (${b.expiry})` : ''}`).slice(0, 2).join(', ')
+          : '—';
+
+    return `<tr>
+      <td><strong>${esc(item.name)}</strong>${item.stock <= low && item.stock > 0 ? `<div class="tiny-note ${stateClass}">Reorder at ${low}</div>` : ''}</td>
+      <td>${esc(item.category || 'General')}</td>
+      <td><code>${esc(item.barcode || '—')}</code></td>
+      <td><code>${esc(identifier)}</code></td>
+      <td>${Number(item.gst ?? 0)}%</td>
+      <td>₹${Number(item.price || 0).toFixed(2)}</td>
+      <td><span class="pill ${stateClass}">${item.stock}</span> <small style="color:var(--text-muted);">${stockState}</small></td>
+    </tr>`;
+  }).join('');
+}
+
+function renderKhataGrid() {
+  const grid = document.getElementById('khataGrid');
+  if (!grid) return;
+
+  const customers = [...(APP_STATE.customers || [])].sort((a, b) => (b.dues || 0) - (a.dues || 0));
+  if (!customers.length) {
+    grid.innerHTML = `<div class="empty-state" style="padding:24px; grid-column:1 / -1;">No customer ledger entries yet.</div>`;
+    return;
+  }
+
+  grid.innerHTML = customers.map(c => {
+    const due = Number(c.dues || 0);
+    const life = Number(c.totalOrdersVal || 0);
+    const lastSale = (APP_STATE.sales || []).filter(s => s.customer?.phone === c.phone).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))[0];
+    const status = due > 0 ? 'Due' : 'Settled';
+    const statusClass = due > 0 ? 'pending' : 'paid';
+
+    return `<div class="khata-card" style="background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-md); padding:14px; display:flex; flex-direction:column; gap:8px;">
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px;">
+        <div>
+          <strong style="font-size:0.96rem;">${esc(c.name || 'Unnamed Customer')}</strong>
+          <div style="font-size:0.75rem; color:var(--text-muted); margin-top:3px;">${esc(c.phone || 'No phone')}</div>
+        </div>
+        <span class="pill ${statusClass}">${status}</span>
+      </div>
+      <div style="display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:8px; font-size:0.78rem; color:var(--text-muted);">
+        <div><strong style="display:block; color:var(--text-dark);">₹${due.toLocaleString('en-IN', { maximumFractionDigits: 2 })}</strong>Due balance</div>
+        <div><strong style="display:block; color:var(--text-dark);">₹${life.toLocaleString('en-IN', { maximumFractionDigits: 2 })}</strong>Life value</div>
+      </div>
+      <div style="font-size:0.74rem; color:var(--text-muted); border-top:1px solid var(--border); padding-top:8px;">
+        ${lastSale ? `Last sale: ${esc(lastSale.invoiceNo || 'Invoice')} · ${esc(lastSale.date || '-')}` : 'No sales recorded yet'}
+      </div>
+      <button class="btn-pill secondary" style="width:100%;" onclick="renderCustomer360Profile('${esc(c.phone || '')}')">Open ledger</button>
+    </div>`;
+  }).join('');
 }
 
 function renderDashboard() {

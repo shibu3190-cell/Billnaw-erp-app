@@ -206,6 +206,13 @@ test('customer dues can never go negative from an over-credit', () => {
 });
 
 /* ========================================================================== */
+group('Legacy login compatibility');
+
+test('legacy sendLoginOtp bridge is defined for old popup flows', () => {
+  const appHasBridge = /function\s+sendLoginOtp\s*\(|window\.sendLoginOtp\s*=\s*sendLoginOtp/.test(appSrc);
+  ok(appHasBridge, 'Expected a legacy sendLoginOtp bridge in app.js');
+});
+
 group('Expiry parsing');
 
 test('month-only expiry resolves to the LAST day of that month', () => {
@@ -217,6 +224,27 @@ test('month-only expiry resolves to the LAST day of that month', () => {
 test('February leap-year handled', () => {
   eq(helpers.parseBatchExpiry('2028-02').getDate(), 29);
   eq(helpers.parseBatchExpiry('2027-02').getDate(), 28);
+});
+
+group('Alert engine');
+
+test('getLowStockItems works without stale catalog filter state', () => {
+  const run = new Function(`
+    globalThis.APP_STATE = {
+      tenantProfile: { lowStockThreshold: 5 },
+      inventory: [
+        { id: 'a', name: 'A', stock: 2 },
+        { id: 'b', name: 'B', stock: 10 },
+        { id: 'c', name: 'C', stock: 0 }
+      ]
+    };
+    globalThis.PAGE_SIZE = 50;
+    ${alertSrc}
+    return getLowStockItems();
+  `);
+  const low = run();
+  eq(low.length, 2, 'low-stock count should ignore stale filtered state');
+  eq(low[0].id, 'c', 'expired/zero-stock item should appear first by stock');
 });
 
 test('explicit day form is preserved', () => {

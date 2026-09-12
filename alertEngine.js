@@ -49,10 +49,6 @@ function daysUntil(date) {
 }
 
 function getLowStockItems() {
-  const totalMatching = filtered.length;
-  const pageLimit = APP_STATE.catalogPage * PAGE_SIZE;
-  const visible = filtered.slice(0, pageLimit);
-
   const { lowStock } = getAlertThresholds();
   return (APP_STATE.inventory || [])
     .filter(i => {
