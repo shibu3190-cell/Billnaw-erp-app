@@ -1994,6 +1994,13 @@ function saveManualPurchase() {
     targetItem = existing;
     alert(`✅ Incremented stock for existing item: ${name} (+${qty} units)`);
   } else {
+    const metaByCategory = {
+      Electronics: { imei: idArray[0] || '', warranty: '' },
+      Jewelry: { karat: '22K', netWt: 0, grossWt: 0, making: 0 },
+      Pharmacy: { batch: idArray[0] || '', expiry: '2027-12' },
+      Grocery: { pack: '' }
+    };
+
     targetItem = {
       id: crypto.randomUUID(),
       name,
@@ -2007,7 +2014,7 @@ function saveManualPurchase() {
       serials: category === 'Electronics' ? idArray : [],
       huids: category === 'Jewelry' ? idArray : [],
       batches: category === 'Pharmacy' && idArray.length ? [{ batch: idArray[0], expiry: '2027-12', stock: qty }] : [],
-      meta: { imei: idArray[0] || '' }
+      meta: metaByCategory[category] || { pack: '' }
     };
     APP_STATE.inventory.push(targetItem);
     alert(`✅ Created and added new item to stock: ${name}`);
@@ -2316,6 +2323,12 @@ function commitAiBill() {
         : (APP_STATE.tenantProfile.assignedIndustry !== 'All'
             ? APP_STATE.tenantProfile.assignedIndustry : 'Grocery');
 
+      const initialMeta =
+        category === 'Electronics' ? { imei: '', warranty: '' }
+        : category === 'Jewelry' ? { karat: '22K', netWt: 0, grossWt: 0, making: 0 }
+        : category === 'Pharmacy' ? { batch: st.batch || '', expiry: st.expiry || '' }
+        : { pack: '' };
+
       target = {
         id: crypto.randomUUID(),
         name: st.name, category, barcode: '',
@@ -2323,7 +2336,8 @@ function commitAiBill() {
         gst: st.gst, cost: st.cost,
         price: st.cost > 0 ? TaxEngine.round2(st.cost * 1.2) : 0,
         stock: st.qty,
-        serials: [], huids: [], batches: [], meta: {}
+        serials: [], huids: [], batches: [],
+        meta: /** @type {any} */ (initialMeta)
       };
       APP_STATE.inventory.push(target);
     }
@@ -3591,7 +3605,19 @@ async function checkoutBill() {
   if (phone !== '-') {
     let cust = APP_STATE.customers.find(c => c.phone === phone);
     if (!cust) {
-      cust = { phone, name, gstin, pan, drugLicenseNo, address, stateCode, dues: 0, totalOrdersVal: 0, orderHistory: [] };
+      cust = {
+        phone,
+        name,
+        category: 'Retail',
+        gstin,
+        pan,
+        drugLicenseNo,
+        address,
+        stateCode,
+        dues: 0,
+        totalOrdersVal: 0,
+        orderHistory: []
+      };
       APP_STATE.customers.push(cust);
     } else {
       // Keep the party record current — a customer who gives their address
@@ -4401,9 +4427,12 @@ function saveEditedStock() {
   }
 
   if (item.category === 'Pharmacy') {
-    item.meta = item.meta || {};
-    item.meta.composition = $id('editItemComposition')?.value.trim() || '';
-    item.composition = item.meta.composition;
+    const composition = $id('editItemComposition')?.value.trim() || '';
+    const nextMeta = /** @type {Record<string, any>} */ ({ ...(item.meta || {}) });
+    if (composition) nextMeta.composition = composition;
+    else delete nextMeta.composition;
+    item.meta = /** @type {any} */ (nextMeta);
+    item.composition = composition;
   }
 
   persistState();
@@ -4877,6 +4906,13 @@ function saveNewProduct() {
 
   if (!name) return alert("Product name is required!");
 
+  const metaByCategory = {
+    Electronics: { imei: '', warranty: '' },
+    Jewelry: { karat: '22K', netWt: 0, grossWt: 0, making: 0 },
+    Pharmacy: { batch: idArray[0] || '', expiry: '2027-12' },
+    Grocery: { pack: '' }
+  };
+
   const newItem = {
     id: crypto.randomUUID(),
     name,
@@ -4890,7 +4926,7 @@ function saveNewProduct() {
     serials: category === 'Electronics' ? idArray : [],
     huids: category === 'Jewelry' ? idArray : [],
     batches: category === 'Pharmacy' && idArray.length ? [{ batch: idArray[0], expiry: '2027-12', stock }] : [],
-    meta: {}
+    meta: metaByCategory[category] || { pack: '' }
   };
   APP_STATE.inventory.push(newItem);
 
