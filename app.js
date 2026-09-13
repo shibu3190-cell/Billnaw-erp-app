@@ -38,6 +38,7 @@ const APP_STATE = {
     mandatoryHsn: false,
     requireIdentifier: false,
     showRoundOff: true,
+    gstPriceMode: 'exclusive',
     defaultGstRate: 18,
     defaultHsn: '',
     logo: '',
@@ -1310,6 +1311,10 @@ function loadComplianceSettingsIntoDOM() {
   if (hsnChk) hsnChk.checked = !!p.mandatoryHsn;
   const roundChk = $id('cfgShowRoundOff');
   if (roundChk) roundChk.checked = p.showRoundOff !== false;
+  const inc = $id('cfgGstPriceModeInclusive');
+  const exc = $id('cfgGstPriceModeExclusive');
+  if (inc) inc.checked = (p.gstPriceMode || 'exclusive') === 'inclusive';
+  if (exc) exc.checked = (p.gstPriceMode || 'exclusive') === 'exclusive';
   setVal('cfgLowStock', String(p.lowStockThreshold ?? 5));
   setVal('cfgExpiryDays', String(p.expiryWarnDays ?? 30));
 }
@@ -1320,6 +1325,7 @@ function saveComplianceSettings() {
   p.defaultHsn = $id('cfgDefaultHsn')?.value.trim() || '';
   p.mandatoryHsn = !!$id('cfgMandatoryHsn')?.checked;
   p.showRoundOff = !!$id('cfgShowRoundOff')?.checked;
+  p.gstPriceMode = $id('cfgGstPriceModeInclusive')?.checked ? 'inclusive' : 'exclusive';
   persistState();
 }
 
@@ -1619,9 +1625,11 @@ function updateStarButton(cust) {
   if (btn) btn.innerHTML = cust.isStarred ? '⭐ Starred customer' : '☆ Star this customer';
 }
 
-function openCustEditModal() {
-  const cust = APP_STATE.customers.find(c => c.phone === APP_STATE.c360Phone);
+function openCustEditModal(custOverride = null) {
+  const cust = custOverride || APP_STATE.customers.find(c => c.phone === APP_STATE.c360Phone);
   if (!cust) { showSaasToast('Select a customer first.', 2500, 'err'); return; }
+
+  if (APP_STATE.c360Phone !== cust.phone) APP_STATE.c360Phone = cust.phone;
 
   setVal('custEditName', cust.name);
   setVal('custEditPhone', cust.phone);
@@ -2058,9 +2066,10 @@ function recordPurchaseBill({ vendor, billNo, divisionName = '', items, source =
   // Purchase GST uses the same engine as sales so input tax and output tax
   // are computed identically — a mismatch between the two is exactly what
   // makes a GSTR-3B reconciliation fail.
+  const includeGst = APP_STATE.tenantProfile.gstPriceMode === 'inclusive';
   const priced = lines.map(l => ({
     ...l,
-    ...TaxEngine.computeLine({ price: l.cost, qty: l.qty, gstRate: l.gst })
+    ...TaxEngine.computeLine({ price: l.cost, qty: l.qty, gstRate: l.gst, includeGst })
   }));
   const totals = TaxEngine.computeInvoiceTotals(priced);
 
@@ -2535,7 +2544,8 @@ function commitModalItem() {
     return;
   }
 
-  const line = TaxEngine.computeLine({ price, qty, gstRate: it.gst });
+  const includeGst = APP_STATE.tenantProfile.gstPriceMode === 'inclusive';
+  const line = TaxEngine.computeLine({ price, qty, gstRate: it.gst, includeGst });
 
   APP_STATE.cart.push({
     ...it, price, qty,
@@ -2545,6 +2555,7 @@ function commitModalItem() {
     // Stamp the rate used at billing time. If a budget changes slabs later,
     // this invoice still reports the rate it was actually taxed at.
     gstRateAtBilling: line.gstRateAtBilling,
+    gstModeAtBilling: line.gstModeAtBilling,
     assignedIdentifier
   });
   closeModal();
@@ -3384,7 +3395,8 @@ function computeReturnTotals() {
     .map(l => {
       // Reuse the exact rate this line was billed at, not the current slab.
       const rate = l.gstRateAtBilling !== undefined ? l.gstRateAtBilling : l.gst;
-      const computed = TaxEngine.computeLine({ price: l.price, qty: l.returnQty, gstRate: rate });
+      const includeGst = l.gstModeAtBilling === 'inclusive';
+      const computed = TaxEngine.computeLine({ price: l.price, qty: l.returnQty, gstRate: rate, includeGst });
       return {
         id: l.id, name: l.name, hsn: l.hsn, gst: rate, gstRateAtBilling: rate,
         price: l.price, qty: l.returnQty,
@@ -4281,6 +4293,8 @@ function renderDashboard() {
   renderDonutChart(pending.length, paid.length, dueCount);
   renderTrendChart();
   renderAlertCentre();
+  renderActivityFeed();
+  renderMobileInvoiceCards();
 
   // Recent Invoices table
   const recentBody = $id('dashRecentOrdersBody');
@@ -4310,6 +4324,181 @@ function renderDashboard() {
       ? ranked.map(c => `<div class="legend-row" style="padding:6px 0;"><div><strong>${esc(c.name)}</strong><br><small style="color:var(--text-muted);">${esc(c.phone)}</small></div><strong>₹${(c.totalOrdersVal || 0).toLocaleString('en-IN')}</strong></div>`).join('')
       : `<p style="color:var(--text-muted); font-size:0.85rem;">No customer purchase history yet.</p>`;
   }
+}
+
+function renderActivityFeed() {
+  const feed = $id('activityFeed');
+  if (!feed) return;
+
+  const sales = [...(APP_STATE.sales || [])].sort((a, b) => {
+    const ta = new Date(a.timestamp || a.date || Date.now()).getTime();
+    const tb = new Date(b.timestamp || b.date || Date.now()).getTime();
+    return tb - ta;
+  });
+  const lowStock = getLowStockItems ? getLowStockItems() : [];
+
+  const items = [];
+  sales.slice(0, 6).forEach(s => {
+    items.push({
+      icon: '✅',
+      text: `${esc(s.invoiceNo || 'Sale')} · ${esc(s.customer?.name || 'Cash Customer')}`,
+      meta: `${s.date || new Date(s.timestamp || Date.now()).toLocaleDateString('en-IN')} · ₹${(s.total || 0).toLocaleString('en-IN')}`,
+      kind: 'sale'
+    });
+  });
+
+  lowStock.slice(0, 3).forEach(item => {
+    items.push({
+      icon: '⚠️',
+      text: `${esc(item.name || 'Item')} is low on stock`,
+      meta: `Stock: ${item.stock ?? 0} · reorder ${item.reorderLevel ?? 'n/a'}`,
+      kind: 'alert'
+    });
+  });
+
+  if (!items.length) {
+    feed.innerHTML = '<div class="activity-empty">No recent activity yet.</div>';
+    return;
+  }
+
+  feed.innerHTML = items.slice(0, 8).map(entry => `
+    <div class="activity-item">
+      <span class="activity-icon">${entry.icon}</span>
+      <div class="activity-copy">
+        <strong>${entry.text}</strong>
+        <small>${entry.meta}</small>
+      </div>
+    </div>
+  `).join('');
+}
+
+function renderMobileInvoiceCards() {
+  const host = $id('dashRecentOrdersMobile');
+  if (!host) return;
+
+  const sales = [...(APP_STATE.sales || [])].reverse().slice(0, 5);
+  if (!sales.length) {
+    host.innerHTML = '<div class="invoice-card empty">No invoices yet.</div>';
+    return;
+  }
+
+  host.innerHTML = sales.map(s => {
+    const customer = s.customer?.name || 'Cash Customer';
+    const status = s.tender === 'Khata' ? 'Due' : 'Paid';
+    const klass = s.tender === 'Khata' ? 'status due' : 'status paid';
+    return `
+      <div class="invoice-card" onclick="openInvoiceActionPopup('${esc(s.invoiceNo)}')">
+        <div class="invoice-card-head">
+          <strong>${esc(s.invoiceNo || 'INV')}</strong>
+          <span class="${klass}">${status}</span>
+        </div>
+        <div class="invoice-card-body">
+          <span>${esc(customer)}</span>
+          <span>${esc(s.date || new Date(s.timestamp || Date.now()).toLocaleDateString('en-IN'))}</span>
+        </div>
+        <div class="invoice-card-foot">
+          <span>₹${(s.total || 0).toLocaleString('en-IN')}</span>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function openSearchModal() {
+  const modal = $id('searchModal');
+  if (!modal) return;
+  modal.classList.remove('hidden');
+  setTimeout(() => $id('searchInput')?.focus(), 20);
+}
+
+function closeSearchModal() {
+  const modal = $id('searchModal');
+  if (!modal) return;
+  modal.classList.add('hidden');
+  const q = $id('searchInput');
+  if (q) q.value = '';
+  const results = $id('searchResults');
+  if (results) results.innerHTML = '';
+}
+
+function handleSearchModalInput(value) {
+  const q = (value || '').trim().toLowerCase();
+  const results = $id('searchResults');
+  if (!results) return;
+
+  if (!q) {
+    results.innerHTML = '<div class="search-empty">Search inventory, customers, or invoices.</div>';
+    return;
+  }
+
+  const matches = [];
+
+  (APP_STATE.inventory || []).forEach(item => {
+    const haystack = [item.name, item.barcode, item.hsn, item.category, item.composition, ...(item.serials || []), ...(item.huids || [])].join(' ').toLowerCase();
+    if (haystack.includes(q)) {
+      matches.push({
+        kind: 'Item',
+        title: item.name,
+        subtitle: `${item.category} • ₹${(item.price || 0).toFixed(2)}`,
+        select: () => { closeSearchModal(); if (typeof openItemModal === 'function') openItemModal(item); }
+      });
+    }
+  });
+
+  (APP_STATE.customers || []).forEach(c => {
+    const haystack = [c.name, c.phone, c.gstin, c.address].join(' ').toLowerCase();
+    if (haystack.includes(q)) {
+      matches.push({
+        kind: 'Customer',
+        title: c.name,
+        subtitle: `${c.phone || '—'} • Due ${fmtCost(c.dues || 0)}`,
+        select: () => { closeSearchModal(); if (typeof openCustEditModal === 'function') openCustEditModal(c); }
+      });
+    }
+  });
+
+  (APP_STATE.sales || []).forEach(s => {
+    const haystack = [s.invoiceNo, s.customer?.name, s.customer?.phone, s.date].join(' ').toLowerCase();
+    if (haystack.includes(q)) {
+      matches.push({
+        kind: 'Invoice',
+        title: s.invoiceNo || 'Invoice',
+        subtitle: `${s.customer?.name || 'Cash Customer'} • ₹${(s.total || 0).toLocaleString('en-IN')}`,
+        select: () => { closeSearchModal(); if (typeof openInvoiceActionPopup === 'function') openInvoiceActionPopup(s.invoiceNo); }
+      });
+    }
+  });
+
+  const deduped = matches.slice(0, 8);
+  results.innerHTML = deduped.length
+    ? deduped.map((m, idx) => `
+      <button class="search-result" type="button" data-index="${idx}">
+        <span class="search-kind">${esc(m.kind)}</span>
+        <strong>${esc(m.title)}</strong>
+        <small>${esc(m.subtitle)}</small>
+      </button>
+    `).join('')
+    : '<div class="search-empty">No matches found.</div>';
+
+  results.querySelectorAll('.search-result').forEach((button, idx) => {
+    button.addEventListener('click', () => deduped[idx].select());
+  });
+}
+
+function toggleSidebarDrawer() {
+  const drawer = $id('sidebarDrawer');
+  if (!drawer) return;
+  drawer.classList.toggle('open');
+  const backdrop = $id('sidebarBackdrop');
+  if (backdrop) backdrop.classList.toggle('visible', drawer.classList.contains('open'));
+}
+
+function closeSidebarDrawer() {
+  const drawer = $id('sidebarDrawer');
+  if (!drawer) return;
+  drawer.classList.remove('open');
+  const backdrop = $id('sidebarBackdrop');
+  if (backdrop) backdrop.classList.remove('visible');
 }
 
 // Minimal dependency-free donut chart — avoids pulling in a charting
@@ -4801,9 +4990,12 @@ function renderTrendChart(rangeDays) {
     </div>`;
 }
 
-function setTrendRange(days) {
-  APP_STATE.trendRangeDays = parseInt(days, 10) || 30;
-  renderTrendChart();
+function setTrendRange(days, el) {
+  const value = parseInt(days, 10) || 30;
+  APP_STATE.trendRangeDays = value;
+  $qa('.time-pill').forEach(btn => btn.classList.toggle('active', Number(btn.dataset.range) === value));
+  if (el && el instanceof HTMLElement) el.classList.add('active');
+  renderTrendChart(value);
 }
 
 
@@ -5060,6 +5252,11 @@ window.handleLogoUpload = handleLogoUpload;
 window.removeShopLogo = removeShopLogo;
 window.selectAlternative = selectAlternative;
 window.updateSyncIndicator = updateSyncIndicator;
+window.openSearchModal = openSearchModal;
+window.closeSearchModal = closeSearchModal;
+window.handleSearchModalInput = handleSearchModalInput;
+window.toggleSidebarDrawer = toggleSidebarDrawer;
+window.closeSidebarDrawer = closeSidebarDrawer;
 
 
 function expandMobileSearch(e) {

@@ -95,6 +95,14 @@ test('zero-rated goods produce zero tax, not NaN', () => {
   eq(l.totalAmount, 300);
 });
 
+test('inclusive GST input resolves to correct base and tax while preserving the billed total', () => {
+  const l = TaxEngine.computeLine({ price: 1180, qty: 2, gstRate: 18, includeGst: true });
+  eq(l.taxableValue, 2000);
+  eq(l.gstAmount, 360);
+  eq(l.totalAmount, 2360);
+  eq(l.gstModeAtBilling, 'inclusive');
+});
+
 /* ========================================================================== */
 group('TaxEngine — place of supply');
 

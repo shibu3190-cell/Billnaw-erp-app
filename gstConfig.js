@@ -112,15 +112,24 @@ const TaxEngine = {
   },
 
   // Computes one line item's tax. Rate is captured onto the line so the
-  // invoice is immune to later slab changes.
-  computeLine({ price, qty, gstRate }) {
-    const taxableValue = this.round2(price * qty);
-    const gstAmount = this.round2(taxableValue * (gstRate / 100));
+  // invoice is immune to later slab changes. If the user enters a price that
+  // already includes GST, we reverse-calculate the base amount instead of
+  // double-counting the tax.
+  computeLine({ price, qty, gstRate, includeGst = false }) {
+    const unitPrice = Number(price) || 0;
+    const quantity = Number(qty) || 0;
+    const rate = Number(gstRate) || 0;
+    const netUnit = includeGst && rate > 0 ? this.round2(unitPrice / (1 + (rate / 100))) : unitPrice;
+    const taxableValue = this.round2(netUnit * quantity);
+    const gstAmount = includeGst
+      ? this.round2((unitPrice * quantity) - taxableValue)
+      : this.round2(taxableValue * (rate / 100));
     return {
       taxableValue,
       gstAmount,
-      totalAmount: this.round2(taxableValue + gstAmount),
-      gstRateAtBilling: gstRate
+      totalAmount: this.round2((includeGst ? unitPrice * quantity : taxableValue + gstAmount)),
+      gstRateAtBilling: rate,
+      gstModeAtBilling: includeGst ? 'inclusive' : 'exclusive'
     };
   },
 

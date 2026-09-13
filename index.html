@@ -212,10 +212,16 @@
       
       <!-- TOP NAV -->
       <header class="top-nav">
+        <button type="button" class="mobile-brand-trigger" onclick="toggleSidebarDrawer()" aria-label="Open menu">
+          <span class="brand-icon" id="mobileHeaderLogo">B</span>
+          <span class="brand-text">Billnaw</span>
+        </button>
+
         <div class="global-search-box" id="globalSearchBox" onclick="expandMobileSearch(event)">
           <span class="icon">🔍</span>
           <input type="text" id="globalSearchInput" placeholder="Search Invoices, Customers, Items..."
                  oninput="handleGlobalSearch(this.value)"
+                 onfocus="openSearchModal()"
                  onblur="if(!this.value) document.getElementById('globalSearchBox').classList.remove('expanded')">
         </div>
 
@@ -276,11 +282,18 @@
           <div class="chart-card">
             <div class="chart-card-header">
               <h3>Orders &amp; Sales Trend</h3>
-              <select class="chart-time-select" onchange="setTrendRange(this.value)">
-                <option value="30">Last 30 Days</option>
-                <option value="7">Last 7 Days</option>
-                <option value="90">Last 90 Days</option>
-              </select>
+              <div class="chart-scope-wrap">
+                <div class="time-pill-group">
+                  <button class="time-pill active" type="button" data-range="30" onclick="setTrendRange(30, this)">30D</button>
+                  <button class="time-pill" type="button" data-range="7" onclick="setTrendRange(7, this)">7D</button>
+                  <button class="time-pill" type="button" data-range="90" onclick="setTrendRange(90, this)">90D</button>
+                </div>
+                <select class="chart-time-select" onchange="setTrendRange(this.value)">
+                  <option value="30">Last 30 Days</option>
+                  <option value="7">Last 7 Days</option>
+                  <option value="90">Last 90 Days</option>
+                </select>
+              </div>
             </div>
             <div id="splineChartContainer"></div>
           </div>
@@ -314,6 +327,17 @@
           <div class="chart-card">
             <div class="chart-card-header"><h3>Top Parties (By Value)</h3></div>
             <div class="ranking-list" id="topCustomersList"></div>
+          </div>
+        </div>
+
+        <div class="dash-activity-grid">
+          <div class="chart-card compact">
+            <div class="chart-card-header"><h3>Recent Activity</h3></div>
+            <div id="activityFeed" class="activity-feed"></div>
+          </div>
+          <div class="chart-card compact">
+            <div class="chart-card-header"><h3>Recent Invoices</h3></div>
+            <div id="dashRecentOrdersMobile" class="mobile-invoice-stack"></div>
           </div>
         </div>
       </section>
@@ -718,6 +742,13 @@
                 <label>Default HSN / SAC Code</label>
                 <input type="text" id="cfgDefaultHsn" placeholder="8517" oninput="saveComplianceSettings()">
               </div>
+              <div class="form-input">
+                <label>Price entry preference</label>
+                <div class="gst-pref-row">
+                  <label class="gst-pref-option"><input type="radio" name="gstPriceMode" id="cfgGstPriceModeExclusive" value="exclusive" onchange="saveComplianceSettings()"> Exclude GST</label>
+                  <label class="gst-pref-option"><input type="radio" name="gstPriceMode" id="cfgGstPriceModeInclusive" value="inclusive" onchange="saveComplianceSettings()"> Include GST</label>
+                </div>
+              </div>
             </div>
 
             <div class="settings-block">
@@ -1000,6 +1031,41 @@
     </nav>
 
   </div>
+
+  <div class="modal-backdrop hidden" id="searchModal" aria-modal="true" role="dialog">
+    <div class="modal-window search-modal-window">
+      <div class="modal-header">
+        <h4>Search</h4>
+        <button type="button" onclick="closeSearchModal()" style="background:none; border:none; font-size:1.2rem; cursor:pointer; color:var(--text-muted);">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-input">
+          <label>Quick search</label>
+          <input type="text" id="searchInput" placeholder="Invoice, customer, SKU, item..." oninput="handleSearchModalInput(this.value)">
+        </div>
+        <div id="searchResults" class="search-results-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="sidebar-backdrop" id="sidebarBackdrop" onclick="closeSidebarDrawer()"></div>
+  <aside class="sidebar-drawer" id="sidebarDrawer">
+    <div class="sidebar-drawer-head">
+      <div style="display:flex; align-items:center; gap:10px;">
+        <div class="brand-icon" id="mobileDrawerLogo">B</div>
+        <div class="brand-title"><h1 id="mobileDrawerName">Billnaw</h1><span id="mobileDrawerSector">Universal ERP</span></div>
+      </div>
+      <button type="button" class="drawer-close-btn" onclick="closeSidebarDrawer()" aria-label="Close menu">✕</button>
+    </div>
+    <nav class="drawer-nav">
+      <button class="nav-item active" onclick="switchView('dashboard', this); closeSidebarDrawer();"><svg class="ic"><use href="#i-home"/></svg><span>Dashboard</span></button>
+      <button class="nav-item" onclick="switchView('pos', this); closeSidebarDrawer();"><svg class="ic"><use href="#i-cart"/></svg><span>Counter POS</span></button>
+      <button class="nav-item" onclick="switchView('khata', this); closeSidebarDrawer();"><svg class="ic"><use href="#i-users"/></svg><span>Parties / Khata</span></button>
+      <button class="nav-item" onclick="switchView('inventory', this); closeSidebarDrawer();"><svg class="ic"><use href="#i-box"/></svg><span>Stock Master</span></button>
+      <button class="nav-item" onclick="switchView('reports', this); closeSidebarDrawer();"><svg class="ic"><use href="#i-chart"/></svg><span>Business 360</span></button>
+      <button class="nav-item admin-only" onclick="switchView('settings', this); closeSidebarDrawer();"><svg class="ic"><use href="#i-gear"/></svg><span>Settings</span></button>
+    </nav>
+  </aside>
 
   <!-- VENDOR EDIT / DIVISIONS MODAL -->
   <div class="modal-backdrop" id="vendorEditModal">
