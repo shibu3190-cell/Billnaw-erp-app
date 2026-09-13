@@ -30,8 +30,14 @@ create index if not exists idx_items_composition
 -- fetch_items_for_role must return the new columns too, or the client loses
 -- composition/reorder data the moment it reads through the role-safe path.
 -- Cost stays redacted for cashiers exactly as before.
+--
+-- IMPORTANT: 0004 created this function with a narrower return signature.
+-- Postgres does not allow changing the OUT row type via CREATE OR REPLACE,
+-- so we must drop the previous version before redefining it.
 -- --------------------------------------------------------------------------
-create or replace function fetch_items_for_role(p_shop_id uuid)
+drop function if exists fetch_items_for_role(uuid);
+
+create function fetch_items_for_role(p_shop_id uuid)
 returns table (
   id uuid, shop_id uuid, name text, category text, barcode text,
   hsn text, gst numeric, price numeric, cost numeric, stock int,
