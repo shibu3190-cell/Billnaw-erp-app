@@ -152,9 +152,9 @@ const APP_STATE = {
 };
 
 // Safe DOM Setters
-const setTxt = (id, val) => { const el = document.getElementById(id); if (el) el.innerText = (val !== undefined && val !== null) ? val : ''; };
-const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.value = (val !== undefined && val !== null) ? val : ''; };
-const setDisplay = (id, s) => { const el = document.getElementById(id); if (el) el.style.display = s; };
+const setTxt = (id, val) => { const el = $id(id); if (el) el.innerText = (val !== undefined && val !== null) ? val : ''; };
+const setVal = (id, val) => { const el = $id(id); if (el) el.value = (val !== undefined && val !== null) ? val : ''; };
+const setDisplay = (id, s) => { const el = $id(id); if (el) el.style.display = s; };
 
 function persistState() {
   try {
@@ -184,8 +184,8 @@ try {
    NETWORK EVENT LISTENERS & STATUS
    ========================================================================== */
 function updateNetworkStatus() {
-  const badge = document.getElementById('networkStatusBadge');
-  const txt = document.getElementById('networkStatusText');
+  const badge = $id('networkStatusBadge');
+  const txt = $id('networkStatusText');
   if (!badge || !txt) return;
 
   if (navigator.onLine) {
@@ -283,7 +283,7 @@ function generateDynamicUpiQR(amount, invoiceNo, opts = {}) {
   // codes, not a hack.
   const badgeSize = size * 0.16;
   const badgeX = (size - badgeSize) / 2, badgeY = (size - badgeSize) / 2;
-  const initial = (shop.trim()[0] || 'B').toUpperCase();
+  const initial = esc((shop.trim()[0] || 'B').toUpperCase());
   const badge = `
     <rect x="${badgeX.toFixed(2)}" y="${badgeY.toFixed(2)}" width="${badgeSize.toFixed(2)}" height="${badgeSize.toFixed(2)}" rx="${(badgeSize * 0.28).toFixed(2)}" fill="#fff" stroke="${accent}" stroke-width="1.4"/>
     <text x="${(size / 2).toFixed(2)}" y="${(size / 2 + badgeSize * 0.14).toFixed(2)}" text-anchor="middle" font-size="${(badgeSize * 0.5).toFixed(2)}" font-weight="800" font-family="Inter, sans-serif" fill="${accent}">${initial}</text>`;
@@ -308,12 +308,23 @@ function generateDynamicUpiQR(amount, invoiceNo, opts = {}) {
    like a browser error on Android)
    ========================================================================== */
 function showSaasToast(message, duration = 4000, tone = 'ok') {
-  const toast = document.getElementById('authToast');
+  const toast = $id('authToast');
   if (!toast) return;
-  toast.innerHTML = `<span class="toast-ico">${tone === 'err' ? '!' : '\u2713'}</span><span>${message}</span>`;
+  // message is escaped even though nearly every call site passes a hardcoded
+  // string literal — a few pass a server error message straight through
+  // (e.g. the return-quantity guard's Postgres RAISE EXCEPTION echoes the
+  // product name back), and a shop owner can name a product anything.
+  // Escaping here protects every current and future call site in one place
+  // rather than relying on each caller remembering to do it themselves.
+  toast.innerHTML = `<span class="toast-ico">${tone === 'err' ? '!' : '\u2713'}</span><span>${esc(message)}</span>`;
   toast.className = `saas-toast ${tone === 'err' ? 'err' : 'ok'}`;
-  clearTimeout(showSaasToast.timeoutId);
-  showSaasToast.timeoutId = setTimeout(() => toast.classList.add('hidden'), duration);
+  // showSaasToast stores its pending-hide timer on itself (a static-ish
+  // property on the function) so a second toast cancels the first one's
+  // auto-hide instead of racing it. TS doesn't track ad-hoc properties
+  // stashed on a function value, hence the cast — behavior is unchanged.
+  const self = /** @type {any} */ (showSaasToast);
+  clearTimeout(self.timeoutId);
+  self.timeoutId = setTimeout(() => toast.classList.add('hidden'), duration);
 }
 
 // Strips spaces, dashes and stray plus signs. Indian numbers get pasted in
@@ -325,8 +336,8 @@ function normalizePhoneNumber(rawValue) {
 // Blurring + disabling the shell behind the overlay stops a half-loaded
 // dashboard being clickable through the auth screen.
 function applyAuthLockState(isLocked) {
-  const overlay = document.getElementById('authOverlay');
-  const appShell = document.querySelector('.app-shell');
+  const overlay = $id('authOverlay');
+  const appShell = $q('.app-shell');
   if (appShell) {
     appShell.style.pointerEvents = isLocked ? 'none' : 'auto';
     appShell.style.filter = isLocked ? 'blur(3px)' : 'none';
@@ -336,7 +347,7 @@ function applyAuthLockState(isLocked) {
 }
 
 function togglePasswordVisibility(inputId, btn) {
-  const el = document.getElementById(inputId);
+  const el = $id(inputId);
   if (!el) return;
   const show = el.type === 'password';
   el.type = show ? 'text' : 'password';
@@ -361,6 +372,23 @@ function esc(v) {
     .replace(/'/g, '&#39;');
 }
 
+// Escapes a value for safe use as a SINGLE-QUOTED JS STRING LITERAL
+// embedded inside an HTML attribute — a genuinely different job from esc().
+// The browser HTML-decodes an attribute's entities (so &#39; becomes ')
+// BEFORE the JS engine parses that attribute's text as an onclick handler.
+// That means esc() alone — correct for displaying text — actively breaks
+// any onclick argument built from a name containing an apostrophe: D'Souza
+// and D'Silva are common Indian surnames, and O'Brien's is a common shop
+// name, so this was not a theoretical edge case.
+// Order matters: escape the JS string literal first (backslash, then
+// quote), THEN HTML-escape the result — reversing the order would
+// re-escape the JS-level backslash and break it.
+function escJs(v) {
+  if (v === null || v === undefined) return '';
+  const jsSafe = String(v).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+  return jsSafe.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
 function fmtCost(v) {
   return (v === null || v === undefined || isNaN(v)) ? '—' : '₹' + Number(v).toFixed(2);
 }
@@ -374,14 +402,14 @@ function applyRoleSecurity(role) {
   // enforcement is server-side: fetch_items_for_role / fetch_sales_for_role
   // return cost as NULL for cashiers, and shop_profit_summary refuses them
   // outright, so there is no cost data in the page to reveal.
-  document.querySelectorAll('.admin-only').forEach((el) => {
+  $qa('.admin-only').forEach((el) => {
     el.style.display = isOwner ? '' : 'none';
   });
-  document.querySelectorAll('.cost-sensitive').forEach((el) => {
+  $qa('.cost-sensitive').forEach((el) => {
     el.style.display = isOwner ? '' : 'none';
   });
   
-  const badge = document.getElementById('roleBadge');
+  const badge = $id('roleBadge');
   if (badge) {
     badge.innerText = isOwner ? '👑 Owner' : '🛒 Staff';
     badge.style.background = isOwner ? 'var(--forest-panel)' : '#eef5f1';
@@ -406,9 +434,15 @@ const SyncEngine = {
   queueKey: 'bn_offline_sync_queue',
 
   generateIdempotencyKey() {
-    return ([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g, c =>
-      (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16)
-    );
+    // Fixed "10000000-1000-4000-8000-100000000000" template — previously
+    // spelled out as ([1e7]+-1e3+-4e3+-8e3+-1e11), an array-to-string
+    // arithmetic trick that evaluates to this exact constant every time.
+    // Same output, but doesn't need a TS arithmetic-operand exception to
+    // type-check.
+    return '10000000-1000-4000-8000-100000000000'.replace(/[018]/g, c => {
+      const n = Number(c);
+      return (n ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> n / 4).toString(16);
+    });
   },
 
   _read() {
@@ -497,7 +531,7 @@ const SyncEngine = {
    has no way to know they're at risk. This makes the queue visible.
    ========================================================================== */
 function updateSyncIndicator() {
-  const el = document.getElementById('syncStatusChip');
+  const el = $id('syncStatusChip');
   if (!el) return;
   const b = SyncEngine.pendingBreakdown();
   const online = navigator.onLine;
@@ -527,10 +561,10 @@ function updateSyncIndicator() {
 
 /* Human-readable "last synced" stamp (P1 #5). */
 function updateLastSyncedLabel() {
-  const el = document.getElementById('lastSyncedLabel');
+  const el = $id('lastSyncedLabel');
   if (!el) return;
   if (!APP_STATE.lastSyncedAt) { el.innerText = 'Never synced from cloud'; return; }
-  const mins = Math.floor((Date.now() - new Date(APP_STATE.lastSyncedAt)) / 60000);
+  const mins = Math.floor((Date.now() - new Date(APP_STATE.lastSyncedAt).getTime()) / 60000);
   el.innerText = mins < 1 ? 'Synced just now'
     : mins < 60 ? `Synced ${mins} min ago`
     : `Synced ${new Date(APP_STATE.lastSyncedAt).toLocaleString('en-IN')}`;
@@ -548,7 +582,7 @@ async function refreshFromCloud() {
     return;
   }
 
-  const btn = document.getElementById('refreshCloudBtn');
+  const btn = $id('refreshCloudBtn');
   if (btn) { btn.disabled = true; btn.innerText = 'Refreshing…'; }
 
   try {
@@ -604,7 +638,7 @@ const COUNTRY_CODES = [
 ];
 
 async function initAuthGate() {
-  const overlay = document.getElementById('authOverlay');
+  const overlay = $id('authOverlay');
   buildCountryList();
   populateStateDropdowns();
 
@@ -652,8 +686,6 @@ function enterApp() {
   loadPrinterAndGstSettingsIntoDOM();
   renderDashboard();
   renderCatalog();
-  renderInventoryTable();
-  renderKhataGrid();
   SyncEngine.flushSyncQueue();
 }
 
@@ -679,7 +711,7 @@ function showRegisterStep() {
 }
 
 function renderWizardDots(containerId, activeIdx) {
-  const el = document.getElementById(containerId);
+  const el = $id(containerId);
   if (!el) return;
   el.innerHTML = [0, 1, 2].map(i =>
     `<span class="wiz-dot ${i === activeIdx ? 'active' : ''} ${i < activeIdx ? 'done' : ''}"></span>`
@@ -692,15 +724,15 @@ function setLoginMethod(method) {
   const isPhone = method === 'phone';
   setDisplay('panePhone', isPhone ? 'block' : 'none');
   setDisplay('paneEmail', isPhone ? 'none' : 'block');
-  document.getElementById('segPhoneBtn')?.classList.toggle('active', isPhone);
-  document.getElementById('segEmailBtn')?.classList.toggle('active', !isPhone);
+  $id('segPhoneBtn')?.classList.toggle('active', isPhone);
+  $id('segEmailBtn')?.classList.toggle('active', !isPhone);
   setTxt('authFormSub', isPhone
     ? "Enter your phone number and we'll send you an OTP — no password needed."
     : "Enter your email address and we'll send you an OTP — no password needed.");
 }
 
 function buildCountryList() {
-  const list = document.getElementById('ccList');
+  const list = $id('ccList');
   if (!list) return;
   list.innerHTML = COUNTRY_CODES.map(c =>
     `<button type="button" class="cc-item" onclick="pickCountry('${c.dial}','${c.flag}')">${c.flag} ${esc(c.name)} <span>${c.dial}</span></button>`
@@ -708,7 +740,7 @@ function buildCountryList() {
 }
 
 function toggleCountryList() {
-  const list = document.getElementById('ccList');
+  const list = $id('ccList');
   if (list) list.style.display = list.style.display === 'none' ? 'block' : 'none';
 }
 
@@ -720,29 +752,9 @@ function pickCountry(dial, flag) {
 }
 
 function onPhoneInput() {
-  const el = document.getElementById('loginPhone');
+  const el = $id('loginPhone');
   if (el) el.value = el.value.replace(/\D/g, '').slice(0, 12);
   setTxt('phoneError', '');
-}
-
-// Legacy bridge for older popup integrations that still call
-// `sendLoginOtp(...)` instead of the current `requestOtp('phone')` flow.
-function sendLoginOtp(target, channel = 'phone', allowCreate = false) {
-  const nextChannel = channel === 'email' ? 'email' : 'phone';
-  const loginField = document.getElementById(nextChannel === 'phone' ? 'loginPhone' : 'loginEmail');
-  if (loginField) loginField.value = target || '';
-
-  AuthFlow.channel = nextChannel;
-  AuthFlow.purpose = 'login';
-  if (nextChannel === 'phone') {
-    const digits = normalizePhoneNumber(target || '').replace(/\D/g, '');
-    AuthFlow.target = `${AuthFlow.dialCode}${digits}`;
-    document.getElementById('loginPhone').value = digits;
-  } else {
-    AuthFlow.target = String(target || '').trim();
-  }
-
-  return requestOtp(nextChannel, allowCreate);
 }
 
 /* ---------- request OTP ---------- */
@@ -752,12 +764,12 @@ async function requestOtp(channel) {
 
   let target, errEl, btnId;
   if (channel === 'phone') {
-    const digits = normalizePhoneNumber(document.getElementById('loginPhone')?.value).replace(/\D/g, '');
+    const digits = normalizePhoneNumber($id('loginPhone')?.value).replace(/\D/g, '');
     errEl = 'phoneError'; btnId = 'phoneOtpBtn';
     if (digits.length < 6) { setTxt(errEl, 'Enter a valid mobile number.'); return; }
     target = AuthFlow.dialCode + digits;
   } else {
-    const email = (document.getElementById('loginEmail')?.value || '').trim();
+    const email = ($id('loginEmail')?.value || '').trim();
     errEl = 'emailError'; btnId = 'emailOtpBtn';
     if (!/^\S+@\S+\.\S+$/.test(email)) { setTxt(errEl, 'Enter a valid email address.'); return; }
     target = email;
@@ -798,7 +810,7 @@ function openOtpStep() {
   setTxt('otpTargetLabel', maskTarget(AuthFlow.target, isPhone));
   setTxt('otpError', '');
   clearOtpBoxes();
-  document.getElementById('otp-0')?.focus();
+  $id('otp-0')?.focus();
   startResendTimer(30);
 }
 
@@ -853,21 +865,21 @@ function clearOtpBoxes() { for (let i = 0; i < 6; i++) setVal(`otp-${i}`, ''); }
 
 function readOtpCode() {
   let c = '';
-  for (let i = 0; i < 6; i++) c += (document.getElementById(`otp-${i}`)?.value || '').trim();
+  for (let i = 0; i < 6; i++) c += ($id(`otp-${i}`)?.value || '').trim();
   return c;
 }
 
 function onOtpInput(idx) {
-  const box = document.getElementById(`otp-${idx}`);
+  const box = $id(`otp-${idx}`);
   if (!box) return;
   box.value = box.value.replace(/\D/g, '').slice(0, 1);
-  if (box.value && idx < 5) document.getElementById(`otp-${idx + 1}`)?.focus();
+  if (box.value && idx < 5) $id(`otp-${idx + 1}`)?.focus();
   if (readOtpCode().length === 6) verifyOtpCode();
 }
 
 function onOtpKeydown(e, idx) {
   if (e.key === 'Backspace' && !e.target.value && idx > 0) {
-    document.getElementById(`otp-${idx - 1}`)?.focus();
+    $id(`otp-${idx - 1}`)?.focus();
   }
 }
 
@@ -899,7 +911,7 @@ async function verifyOtpCode() {
   if (error) {
     setTxt('otpError', /expired/i.test(error) ? 'That code expired. Request a new one.' : 'Incorrect code. Try again.');
     clearOtpBoxes();
-    document.getElementById('otp-0')?.focus();
+    $id('otp-0')?.focus();
     return;
   }
 
@@ -925,10 +937,10 @@ async function signInWithGoogle() {
 
 /* ---------- registration ---------- */
 async function submitRegistration() {
-  const shopName = document.getElementById('regShopName')?.value.trim() || '';
-  const ownerName = document.getElementById('regOwnerName')?.value.trim() || '';
-  const phoneDigits = (document.getElementById('regPhone')?.value || '').replace(/\D/g, '');
-  const email = document.getElementById('regEmail')?.value.trim() || '';
+  const shopName = $id('regShopName')?.value.trim() || '';
+  const ownerName = $id('regOwnerName')?.value.trim() || '';
+  const phoneDigits = ($id('regPhone')?.value || '').replace(/\D/g, '');
+  const email = $id('regEmail')?.value.trim() || '';
 
   if (!shopName) return setTxt('regError', 'Shop name is required.');
   if (!ownerName) return setTxt('regError', 'Owner name is required.');
@@ -950,7 +962,7 @@ async function submitRegistration() {
 
 function onRegGstinInput(val) {
   const code = (val || '').trim().slice(0, 2);
-  const sel = document.getElementById('regState');
+  const sel = $id('regState');
   if (sel && GST_STATE_CODES[code]) {
     sel.value = code;
     setTxt('regStateHint', `Detected: ${GST_STATE_CODES[code]} — this becomes your home state for CGST/SGST vs IGST.`);
@@ -961,14 +973,14 @@ function onRegGstinInput(val) {
 
 function pickIndustry(ind, el) {
   AuthFlow.selectedIndustry = ind;
-  document.querySelectorAll('.ind-card').forEach(c => c.classList.remove('active'));
+  $qa('.ind-card').forEach(c => c.classList.remove('active'));
   if (el) el.classList.add('active');
 }
 
 async function finishOnboarding() {
-  const address = document.getElementById('regAddress')?.value.trim() || '';
-  const gstin = document.getElementById('regGstin')?.value.trim() || '';
-  const stateCode = document.getElementById('regState')?.value || '';
+  const address = $id('regAddress')?.value.trim() || '';
+  const gstin = $id('regGstin')?.value.trim() || '';
+  const stateCode = $id('regState')?.value || '';
   const industry = AuthFlow.selectedIndustry;
 
   if (!address) return setTxt('profileError', 'Store address is required — it prints on every invoice.');
@@ -1019,15 +1031,18 @@ function hydrateTenantFromShop(shop) {
   p.logo = shop.logo || p.logo || '';
   p.lowStockThreshold = shop.low_stock_threshold ?? p.lowStockThreshold ?? 5;
   p.expiryWarnDays = shop.expiry_warn_days ?? p.expiryWarnDays ?? 30;
+  p.drugLicenseNo = shop.drug_license_no || p.drugLicenseNo || '';
+  p.panNumber = shop.pan_number || p.panNumber || '';
   p.isRegistered = true;
   persistState();
   syncProfileToDOM();
   applyShopLogo();
+  resetCustomerStateToShopDefault();
 }
 
 async function hydrateCloudData(shopId) {
   const [itemsRes, custRes, salesRes, purchRes, retRes] = await Promise.all([
-    SB.fetchItems(shopId), SB.fetchCustomers(shopId), SB.fetchSales(shopId),
+    SB.fetchItems(shopId), SB.fetchCustomersTagged(shopId), SB.fetchSales(shopId),
     SB.fetchPurchases(shopId), SB.fetchReturns(shopId)
   ]);
 
@@ -1067,11 +1082,16 @@ async function hydrateCloudData(shopId) {
   }
 
   if (custRes.data) {
-    APP_STATE.customers = custRes.data.map(c => ({
-      phone: c.phone, name: c.name, gstin: c.gstin, address: c.address || '',
-      stateCode: c.state_code || '', category: c.category,
-      dues: Number(c.dues), totalOrdersVal: Number(c.total_orders_val), orderHistory: []
-    }));
+    APP_STATE.customers = custRes.data
+      .filter(c => !c.archived) // archived customers stay in the DB (history intact) but off every UI list
+      .map(c => ({
+        id: c.id, phone: c.phone, name: c.name, gstin: c.gstin || '', pan: c.pan || '',
+        drugLicenseNo: c.drug_license_no || '', address: c.address || '',
+        stateCode: c.state_code || '', category: c.category,
+        dues: Number(c.dues), totalOrdersVal: Number(c.total_orders_val),
+        isStarred: !!c.is_starred, isFrequent: !!c.is_frequent,
+        ordersLast90d: Number(c.orders_last_90d) || 0, orderHistory: []
+      }));
   }
 
   if (salesRes.data) {
@@ -1114,7 +1134,7 @@ async function hydrateCloudData(shopId) {
 
 function setAuthBusy(btnId, busy, label) {
   AuthFlow.busy = busy;
-  const btn = document.getElementById(btnId);
+  const btn = $id(btnId);
   if (!btn) return;
   btn.disabled = busy;
   btn.innerHTML = label;
@@ -1135,7 +1155,9 @@ function lockPOS() { fullSignOut(); }
    ========================================================================== */
 function applyIndustryLock() {
   const profile = APP_STATE.tenantProfile;
-  const chipContainer = document.getElementById('sectorChipsBar');
+  const chipContainer = $id('sectorChipsBar');
+  const dlField = $id('custDrugLicense');
+  if (dlField) dlField.style.display = profile.assignedIndustry === 'Pharmacy' ? 'block' : 'none';
 
   if (!profile.isLocked || profile.assignedIndustry === 'All') {
     if (chipContainer) chipContainer.style.display = 'flex';
@@ -1160,6 +1182,13 @@ function syncProfileToDOM() {
   setVal('cfgTerms', p.terms);
   setVal('cfgBankName', p.bankName);
   setVal('cfgBankAcc', p.bankAcc);
+  setVal('cfgDrugLicenseNo', p.drugLicenseNo || '');
+  setVal('cfgPanNumber', p.panNumber || '');
+
+  // Drug License only matters for a pharmacy — hidden for every other
+  // vertical rather than shown as a field nobody in, say, jewellery needs.
+  const dlRow = $id('cfgDrugLicenseRow');
+  if (dlRow) dlRow.style.display = p.assignedIndustry === 'Pharmacy' ? 'block' : 'none';
 
   setTxt('pStoreName', p.shopName);
   setTxt('pStoreAddr', p.address);
@@ -1168,18 +1197,31 @@ function syncProfileToDOM() {
   setTxt('pBankDisplay', `${p.bankName} • A/C: ${p.bankAcc} • IFSC: ${p.bankIfsc}`);
   setTxt('pUpiDisplay', p.upiId);
   setTxt('pTermsDisplay', p.terms);
+
+  const dlDisplay = $id('pDrugLicenseRow');
+  if (dlDisplay) {
+    dlDisplay.style.display = (p.assignedIndustry === 'Pharmacy' && p.drugLicenseNo) ? 'block' : 'none';
+    setTxt('pDrugLicenseNo', p.drugLicenseNo || '');
+  }
+  const panDisplay = $id('pPanRow');
+  if (panDisplay) {
+    panDisplay.style.display = p.panNumber ? 'block' : 'none';
+    setTxt('pPanNumber', p.panNumber || '');
+  }
 }
 
 function saveAllSettings() {
   const p = APP_STATE.tenantProfile;
-  p.shopName = document.getElementById('cfgName')?.value.trim() || p.shopName;
-  p.gstin = document.getElementById('cfgGst')?.value.trim() || '';
-  p.phone = document.getElementById('cfgPhone')?.value.trim() || '';
-  p.address = document.getElementById('cfgAddress')?.value.trim() || '';
-  p.upiId = document.getElementById('cfgUpiId')?.value.trim() || '';
-  p.terms = document.getElementById('cfgTerms')?.value.trim() || '';
-  p.bankName = document.getElementById('cfgBankName')?.value.trim() || '';
-  p.bankAcc = document.getElementById('cfgBankAcc')?.value.trim() || '';
+  p.shopName = $id('cfgName')?.value.trim() || p.shopName;
+  p.gstin = $id('cfgGst')?.value.trim() || '';
+  p.phone = $id('cfgPhone')?.value.trim() || '';
+  p.address = $id('cfgAddress')?.value.trim() || '';
+  p.upiId = $id('cfgUpiId')?.value.trim() || '';
+  p.terms = $id('cfgTerms')?.value.trim() || '';
+  p.bankName = $id('cfgBankName')?.value.trim() || '';
+  p.bankAcc = $id('cfgBankAcc')?.value.trim() || '';
+  p.drugLicenseNo = $id('cfgDrugLicenseNo')?.value.trim() || '';
+  p.panNumber = $id('cfgPanNumber')?.value.trim().toUpperCase() || '';
   // NOTE: industry vertical is deliberately NOT touched here — it's locked
   // at onboarding and shown read-only in Settings → Industry Vertical.
   // This function used to read a #cfgIndustrySelect field that no longer
@@ -1195,7 +1237,8 @@ function saveAllSettings() {
   if (APP_STATE.cloudSession && p.shopId) {
     SB.updateShopSettings(p.shopId, {
       name: p.shopName, gstin: p.gstin, phone: p.phone, address: p.address,
-      upi_id: p.upiId, terms: p.terms, bank_name: p.bankName, bank_acc: p.bankAcc
+      upi_id: p.upiId, terms: p.terms, bank_name: p.bankName, bank_acc: p.bankAcc,
+      drug_license_no: p.drugLicenseNo || null, pan_number: p.panNumber || null
     });
   }
 }
@@ -1209,9 +1252,9 @@ function openSettingsHome() {
 }
 
 function openSettingsPanel(key) {
-  document.querySelectorAll('.settings-panel').forEach(p => p.classList.remove('open'));
-  const panel = document.getElementById(`panel-${key}`);
-  const backdrop = document.getElementById('settingsPanelBackdrop');
+  $qa('.settings-panel').forEach(p => p.classList.remove('open'));
+  const panel = $id(`panel-${key}`);
+  const backdrop = $id('settingsPanelBackdrop');
   if (!panel) return;
   panel.classList.add('open');
   if (backdrop) backdrop.classList.add('open');
@@ -1225,8 +1268,8 @@ function openSettingsPanel(key) {
 }
 
 function closeSettingsPanel() {
-  document.querySelectorAll('.settings-panel.open').forEach(p => p.classList.remove('open'));
-  const backdrop = document.getElementById('settingsPanelBackdrop');
+  $qa('.settings-panel.open').forEach(p => p.classList.remove('open'));
+  const backdrop = $id('settingsPanelBackdrop');
   if (backdrop) backdrop.classList.remove('open');
   document.body.classList.remove('settings-panel-active');
 }
@@ -1240,19 +1283,19 @@ document.addEventListener('keydown', (e) => {
 });
 
 function toggleAccordion(accId) {
-  const item = document.getElementById(accId);
+  const item = $id(accId);
   if (item) item.classList.toggle('open');
 }
 
 function updateLivePreview() {
   const p = APP_STATE.tenantProfile;
-  setTxt('pvShopName', document.getElementById('cfgName')?.value || p.shopName);
-  setTxt('pvAddress', document.getElementById('cfgAddress')?.value || p.address);
-  setTxt('pvGst', document.getElementById('cfgGst')?.value || p.gstin);
-  setTxt('pvPhone', document.getElementById('cfgPhone')?.value || p.phone);
-  const bank = document.getElementById('cfgBankName')?.value || p.bankName || '';
-  const acc = document.getElementById('cfgBankAcc')?.value || p.bankAcc || '';
-  const upi = document.getElementById('cfgUpiId')?.value || p.upiId || '';
+  setTxt('pvShopName', $id('cfgName')?.value || p.shopName);
+  setTxt('pvAddress', $id('cfgAddress')?.value || p.address);
+  setTxt('pvGst', $id('cfgGst')?.value || p.gstin);
+  setTxt('pvPhone', $id('cfgPhone')?.value || p.phone);
+  const bank = $id('cfgBankName')?.value || p.bankName || '';
+  const acc = $id('cfgBankAcc')?.value || p.bankAcc || '';
+  const upi = $id('cfgUpiId')?.value || p.upiId || '';
   setTxt('pvBankInfo', bank ? `${bank} • A/C: ${acc}` : 'Add bank details above');
   setTxt('pvUpiInfo', upi ? `UPI: ${upi}` : 'Add a UPI ID to enable scan-to-pay');
 }
@@ -1263,9 +1306,9 @@ function loadComplianceSettingsIntoDOM() {
   GstConfig.refreshAllRateSelects();
   setVal('cfgDefaultGst', p.defaultGstRate != null ? String(p.defaultGstRate) : '18');
   setVal('cfgDefaultHsn', p.defaultHsn || '');
-  const hsnChk = document.getElementById('cfgMandatoryHsn');
+  const hsnChk = $id('cfgMandatoryHsn');
   if (hsnChk) hsnChk.checked = !!p.mandatoryHsn;
-  const roundChk = document.getElementById('cfgShowRoundOff');
+  const roundChk = $id('cfgShowRoundOff');
   if (roundChk) roundChk.checked = p.showRoundOff !== false;
   setVal('cfgLowStock', String(p.lowStockThreshold ?? 5));
   setVal('cfgExpiryDays', String(p.expiryWarnDays ?? 30));
@@ -1273,10 +1316,10 @@ function loadComplianceSettingsIntoDOM() {
 
 function saveComplianceSettings() {
   const p = APP_STATE.tenantProfile;
-  p.defaultGstRate = parseFloat(document.getElementById('cfgDefaultGst')?.value) || 18;
-  p.defaultHsn = document.getElementById('cfgDefaultHsn')?.value.trim() || '';
-  p.mandatoryHsn = !!document.getElementById('cfgMandatoryHsn')?.checked;
-  p.showRoundOff = !!document.getElementById('cfgShowRoundOff')?.checked;
+  p.defaultGstRate = parseFloat($id('cfgDefaultGst')?.value) || 18;
+  p.defaultHsn = $id('cfgDefaultHsn')?.value.trim() || '';
+  p.mandatoryHsn = !!$id('cfgMandatoryHsn')?.checked;
+  p.showRoundOff = !!$id('cfgShowRoundOff')?.checked;
   persistState();
 }
 
@@ -1296,9 +1339,9 @@ function loadIndustrySettingsIntoDOM() {
   const rule = INDUSTRY_TRACK_MAP[ind];
 
   setTxt('industryLockName', ind === 'All' ? 'Universal Mode' : `${ind} Vertical`);
-  const pill = document.getElementById('industryLockPill');
-  const desc = document.getElementById('industryLockDesc');
-  const toggleBlock = document.getElementById('industryToggleBlock');
+  const pill = $id('industryLockPill');
+  const desc = $id('industryLockDesc');
+  const toggleBlock = $id('industryToggleBlock');
 
   if (p.isLocked && ind !== 'All') {
     if (pill) pill.style.display = 'inline-flex';
@@ -1311,7 +1354,7 @@ function loadIndustrySettingsIntoDOM() {
   if (rule) {
     if (toggleBlock) toggleBlock.style.display = 'block';
     setTxt('requireIdLabel', `Block checkout if a ${ind} item has no ${rule.noun} assigned`);
-    const chk = document.getElementById('cfgRequireIdentifier');
+    const chk = $id('cfgRequireIdentifier');
     if (chk) chk.checked = !!p.requireIdentifier;
   } else if (toggleBlock) {
     toggleBlock.style.display = 'none'; // Universal/Grocery: nothing to enforce here
@@ -1319,13 +1362,13 @@ function loadIndustrySettingsIntoDOM() {
 }
 
 function saveIndustrySettings() {
-  APP_STATE.tenantProfile.requireIdentifier = !!document.getElementById('cfgRequireIdentifier')?.checked;
+  APP_STATE.tenantProfile.requireIdentifier = !!$id('cfgRequireIdentifier')?.checked;
   persistState();
 }
 
 /* ---------- Staff & Roles panel ---------- */
 async function loadStaffPanel() {
-  const tbody = document.getElementById('staffTableBody');
+  const tbody = $id('staffTableBody');
   if (!tbody) return;
   tbody.innerHTML = `<tr><td colspan="3" style="text-align:center; color:var(--text-muted);">Loading…</td></tr>`;
 
@@ -1336,7 +1379,7 @@ async function loadStaffPanel() {
 
   const { data, error } = await SB.fetchShopStaff(APP_STATE.tenantProfile.shopId);
   if (error) {
-    tbody.innerHTML = `<tr><td colspan="3" style="text-align:center; color:var(--danger);">${error}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="3" style="text-align:center; color:var(--danger);">${esc(error)}</td></tr>`;
     return;
   }
 
@@ -1363,8 +1406,8 @@ let scannerStream = null;
 let scannerInterval = null;
 
 async function openCameraScanner() {
-  const modal = document.getElementById('cameraScannerModal');
-  const video = document.getElementById('scannerVideo');
+  const modal = $id('cameraScannerModal');
+  const video = $id('scannerVideo');
   if (modal) modal.classList.add('open');
 
   try {
@@ -1383,7 +1426,7 @@ async function openCameraScanner() {
     if (!('BarcodeDetector' in window)) {
       setDisplay('scannerFallback', 'block');
       setTxt('scannerStatus', 'Live scanning is not supported by this browser.');
-      const input = document.getElementById('scannerManualCode');
+      const input = $id('scannerManualCode');
       if (input) { input.value = ''; input.focus(); }
       return;
     }
@@ -1462,7 +1505,7 @@ function toggleScanContinuous(el) {
 }
 
 function submitManualScan() {
-  const input = document.getElementById('scannerManualCode');
+  const input = $id('scannerManualCode');
   const code = (input?.value || '').trim();
   if (!code) return;
   handleScannedCode(code);
@@ -1471,7 +1514,7 @@ function submitManualScan() {
 }
 
 function closeCameraScanner() {
-  const modal = document.getElementById('cameraScannerModal');
+  const modal = $id('cameraScannerModal');
   if (modal) modal.classList.remove('open');
   if (scannerInterval) clearInterval(scannerInterval);
   if (scannerStream) {
@@ -1494,7 +1537,7 @@ function handleScannedCode(code) {
   if (match) {
     openItemModal(match);
     setTimeout(() => {
-      const sel = document.getElementById('mSerialSelect');
+      const sel = $id('mSerialSelect');
       if (sel) sel.value = c;
     }, 100);
   } else {
@@ -1514,10 +1557,151 @@ function autoFillCustomer(query) {
   if (match) {
     setVal('custName', match.name);
     setVal('custGstin', match.gstin || '');
+    setVal('custPan', match.pan || '');
+    setVal('custDrugLicense', match.drugLicenseNo || '');
     setVal('custAddress', match.address || '');
-    setVal('custState', match.stateCode || '');
+    // Only override the shop-default state if this customer actually has
+    // one on file — an empty saved value should fall back to the default,
+    // not blank it out.
+    if (match.stateCode) setVal('custState', match.stateCode);
+    else resetCustomerStateToShopDefault();
     updateTaxTypeHint();
   }
+}
+
+/* ==========================================================================
+   CUSTOMER 360 — SEARCH, STAR, EDIT, ARCHIVE/DELETE
+   ========================================================================== */
+function handleCust360Search(query) {
+  const results = $id('cust360SearchResults');
+  if (!results) return;
+
+  const q = query.trim().toLowerCase();
+  if (!q) { results.style.display = 'none'; return; }
+
+  const matches = APP_STATE.customers
+    .filter(c => c.name.toLowerCase().includes(q) || c.phone.includes(q))
+    .slice(0, 8);
+
+  if (!matches.length) {
+    results.innerHTML = `<div class="cc-item" style="cursor:default;">No matches</div>`;
+    results.style.display = 'block';
+    return;
+  }
+
+  results.innerHTML = matches.map(c => `
+    <button type="button" class="cc-item" onclick="selectCust360Result('${esc(c.phone)}', '${escJs(c.name)}')">
+      ${c.isStarred ? '⭐ ' : ''}${esc(c.name)} <span>${esc(c.phone)}</span>
+    </button>`).join('');
+  results.style.display = 'block';
+}
+
+function selectCust360Result(phone, name) {
+  setVal('cust360SearchInput', name);
+  setDisplay('cust360SearchResults', 'none');
+  renderCustomer360Profile(phone);
+}
+
+function toggleCurrentCustomerStar() {
+  const cust = APP_STATE.customers.find(c => c.phone === APP_STATE.c360Phone);
+  if (!cust) return;
+  cust.isStarred = !cust.isStarred;
+  updateStarButton(cust);
+  if (cust.id && APP_STATE.cloudSession) {
+    SB.setCustomerStar(cust.id, cust.isStarred).then(({ error }) => {
+      if (error) showSaasToast(`Star sync failed: ${error}`, 3500, 'err');
+    });
+  }
+}
+
+function updateStarButton(cust) {
+  const btn = $id('c360StarBtn');
+  if (btn) btn.innerHTML = cust.isStarred ? '⭐ Starred customer' : '☆ Star this customer';
+}
+
+function openCustEditModal() {
+  const cust = APP_STATE.customers.find(c => c.phone === APP_STATE.c360Phone);
+  if (!cust) { showSaasToast('Select a customer first.', 2500, 'err'); return; }
+
+  setVal('custEditName', cust.name);
+  setVal('custEditPhone', cust.phone);
+  setVal('custEditAddress', cust.address || '');
+  setVal('custEditGstin', cust.gstin || '');
+  setVal('custEditPan', cust.pan || '');
+  setVal('custEditDrugLicense', cust.drugLicenseNo || '');
+
+  const dlRow = $id('custEditDlRow');
+  if (dlRow) dlRow.style.display = APP_STATE.tenantProfile.assignedIndustry === 'Pharmacy' ? 'block' : 'none';
+
+  $id('custEditModal')?.classList.add('open');
+}
+
+function closeCustEditModal() { $id('custEditModal')?.classList.remove('open'); }
+
+function saveCustEdit() {
+  const cust = APP_STATE.customers.find(c => c.phone === APP_STATE.c360Phone);
+  if (!cust) return;
+
+  const name = $id('custEditName')?.value.trim();
+  if (!name) { showSaasToast('Name is required.', 2500, 'err'); return; }
+
+  cust.name = name;
+  cust.address = $id('custEditAddress')?.value.trim() || '';
+  cust.gstin = $id('custEditGstin')?.value.trim() || '';
+  cust.pan = $id('custEditPan')?.value.trim().toUpperCase() || '';
+  cust.drugLicenseNo = $id('custEditDrugLicense')?.value.trim() || '';
+  // Phone is the client-side key everywhere (cart, sales, dropdowns) —
+  // changing it here would silently disconnect this profile from its own
+  // history, so it's shown for reference but not editable from this panel.
+
+  persistState();
+  renderCustomer360Profile(cust.phone);
+  closeCustEditModal();
+  showSaasToast('Profile updated.', 2500);
+
+  if (cust.id && APP_STATE.cloudSession) {
+    SB.updateCustomerDetails(cust.id, {
+      name: cust.name, address: cust.address, gstin: cust.gstin || null,
+      pan: cust.pan || null, drug_license_no: cust.drugLicenseNo || null
+    }).then(({ error }) => { if (error) showSaasToast(`Sync failed: ${error}`, 3500, 'err'); });
+  }
+}
+
+// Archive is the default, reversible action. True deletion is only offered
+// — and only succeeds — when the server confirms zero sales history, so a
+// customer with even one past order can never be permanently erased from
+// this screen.
+async function archiveCurrentCustomer() {
+  const cust = APP_STATE.customers.find(c => c.phone === APP_STATE.c360Phone);
+  if (!cust) { showSaasToast('Select a customer first.', 2500, 'err'); return; }
+
+  const hasHistory = (cust.totalOrdersVal || 0) > 0 || (cust.ordersLast90d || 0) > 0;
+
+  if (hasHistory) {
+    if (!confirm(`${cust.name} has order history and cannot be permanently deleted — GST records must stay intact. Archive them instead? They'll disappear from every list but their invoices are untouched.`)) return;
+    APP_STATE.customers = APP_STATE.customers.filter(c => c.phone !== cust.phone);
+    persistState();
+    closeReportDetail();
+    showSaasToast(`${cust.name} archived.`, 3000);
+    if (cust.id && APP_STATE.cloudSession) {
+      SB.archiveCustomer(cust.id, true).then(({ error }) => {
+        if (error) showSaasToast(`Archive sync failed: ${error}`, 3500, 'err');
+      });
+    }
+    return;
+  }
+
+  if (!confirm(`Permanently delete ${cust.name}? They have no order history, so this cannot be undone from within the app.`)) return;
+
+  if (cust.id && APP_STATE.cloudSession) {
+    const { error } = await SB.deleteCustomerIfUnused(APP_STATE.tenantProfile.shopId, cust.id);
+    if (error) { showSaasToast(error, 5000, 'err'); return; } // server is the real guard, e.g. a sale synced from another device since this one loaded
+  }
+
+  APP_STATE.customers = APP_STATE.customers.filter(c => c.phone !== cust.phone);
+  persistState();
+  closeReportDetail();
+  showSaasToast(`${cust.name} deleted.`, 2500);
 }
 
 function renderCustomer360Profile(custPhone) {
@@ -1527,12 +1711,18 @@ function renderCustomer360Profile(custPhone) {
   APP_STATE.c360Phone = cust.phone;
 
   setTxt('c360Name', cust.name);
-  setTxt('c360Contact', `${cust.phone} · ${cust.gstin || 'Unregistered / B2C'}${cust.address ? ' · ' + cust.address : ''}`);
+  setTxt('c360Contact', [
+    cust.phone,
+    cust.gstin || 'Unregistered / B2C',
+    cust.pan ? `PAN ${cust.pan}` : '',
+    cust.address || ''
+  ].filter(Boolean).join(' · '));
+  updateStarButton(cust);
   setTxt('c360Ltv', `₹${(cust.totalOrdersVal || 0).toLocaleString('en-IN')}`);
   setTxt('c360Due', `₹${(cust.dues || 0).toLocaleString('en-IN')}`);
 
-  const thead = document.getElementById('drillTableHead');
-  const tbody = document.getElementById('drillTableBody');
+  const thead = $id('drillTableHead');
+  const tbody = $id('drillTableBody');
   if (!thead || !tbody) return;
 
   // Derived from the actual sales ledger, not from a per-customer
@@ -1543,7 +1733,7 @@ function renderCustomer360Profile(custPhone) {
   // everywhere, and automatically reflects returns too.
   const history = (APP_STATE.sales || [])
     .filter(s => s.customer?.phone === cust.phone)
-    .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+    .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
 
   const returnsFor = inv => (APP_STATE.returns || []).filter(r => r.invoiceNo === inv);
 
@@ -1599,7 +1789,7 @@ function exportCustomer360() {
 
   const history = (APP_STATE.sales || [])
     .filter(s => s.customer?.phone === cust.phone)
-    .sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+    .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
 
   if (!history.length) { showSaasToast('No purchases to export for this party.', 3000, 'err'); return; }
 
@@ -1629,21 +1819,55 @@ function exportCustomer360() {
 /* ==========================================================================
    INWARD PURCHASE & AI OCR (ONLINE RESTRICTED)
    ========================================================================== */
+// Populates the Division datalist for whatever vendor name the owner has
+// typed so far — matched against known vendors client-side first (instant,
+// no network wait while typing), falling back to a cloud lookup only if
+// the name matches a vendor we don't have cached locally yet.
+let purVendorLookupTimer = null;
+function onPurVendorInput(value) {
+  clearTimeout(purVendorLookupTimer);
+  const datalist = $id('purDivisionOptions');
+  if (!datalist) return;
+
+  const name = value.trim().toLowerCase();
+  if (!name) { datalist.innerHTML = ''; return; }
+
+  const localMatch = (APP_STATE.vendors || []).find(v => v.name.toLowerCase() === name);
+  if (localMatch) { populateDivisionDatalist(localMatch.id); return; }
+
+  // Debounced cloud lookup — this fires while the owner is still typing,
+  // so a lookup per keystroke would be wasteful and would race itself.
+  purVendorLookupTimer = setTimeout(async () => {
+    if (!APP_STATE.cloudSession) return;
+    const { data } = await SB.client.from('vendors')
+      .select('id').eq('shop_id', APP_STATE.tenantProfile.shopId)
+      .ilike('name', value.trim()).maybeSingle();
+    if (data?.id) populateDivisionDatalist(data.id);
+  }, 400);
+}
+
+async function populateDivisionDatalist(vendorId) {
+  const datalist = $id('purDivisionOptions');
+  if (!datalist) return;
+  const { data } = await SB.fetchVendorDivisions(APP_STATE.tenantProfile.shopId, vendorId);
+  datalist.innerHTML = (data || []).map(d => `<option value="${esc(d.name)}"></option>`).join('');
+}
+
 function openInwardPurchaseModal() {
   populateRestockPicker();
-  const m = document.getElementById('inwardPurchaseModal');
+  const m = $id('inwardPurchaseModal');
   if (m) m.classList.add('open');
 }
 function closeInwardModal() {
-  const m = document.getElementById('inwardPurchaseModal');
+  const m = $id('inwardPurchaseModal');
   if (m) m.classList.remove('open');
 }
 
 function toggleInwardMode(mode) {
-  const manView = document.getElementById('inwardManualView');
-  const aiView = document.getElementById('inwardAiView');
-  const btnMan = document.getElementById('btnInwardManual');
-  const btnAi = document.getElementById('btnInwardAi');
+  const manView = $id('inwardManualView');
+  const aiView = $id('inwardAiView');
+  const btnMan = $id('btnInwardManual');
+  const btnAi = $id('btnInwardAi');
 
   if (mode === 'manual') {
     if (manView) manView.style.display = 'block';
@@ -1697,7 +1921,7 @@ async function syncItemToCloud(item) {
    whole class of error.
    ========================================================================== */
 function populateRestockPicker() {
-  const sel = document.getElementById('purExistingItem');
+  const sel = $id('purExistingItem');
   if (!sel) return;
   const items = [...(APP_STATE.inventory || [])].sort((a, b) => a.name.localeCompare(b.name));
   sel.innerHTML = `<option value="">— New product / enter manually below —</option>` +
@@ -1705,7 +1929,7 @@ function populateRestockPicker() {
 }
 
 function prefillFromExistingItem(itemId) {
-  const idField = document.getElementById('purExistingItemId');
+  const idField = $id('purExistingItemId');
   if (!itemId) {
     if (idField) idField.value = '';
     ['purName', 'purBarcode', 'purHsn', 'purIdentifiers'].forEach(f => setVal(f, ''));
@@ -1726,7 +1950,7 @@ function prefillFromExistingItem(itemId) {
   setVal('purPrice', it.price || '');
   setVal('purIdentifiers', ''); // new units bring new serials — never reuse the old list
 
-  const notice = document.getElementById('restockNotice');
+  const notice = $id('restockNotice');
   if (notice) {
     notice.style.display = 'block';
     notice.innerHTML = `Restocking <strong>${esc(it.name)}</strong> — currently ${it.stock} in stock. New quantity will be added to that, and any serials/batches you enter are appended to the existing pool.`;
@@ -1734,15 +1958,15 @@ function prefillFromExistingItem(itemId) {
 }
 
 function saveManualPurchase() {
-  const name = document.getElementById('purName')?.value.trim();
-  const category = document.getElementById('purCategory')?.value || 'Electronics';
-  const barcode = document.getElementById('purBarcode')?.value.trim() || '';
-  const hsn = document.getElementById('purHsn')?.value.trim() || '8517';
-  const gst = parseInt(document.getElementById('purGst')?.value, 10) || 18;
-  const qty = parseInt(document.getElementById('purQty')?.value, 10) || 1;
-  const cost = parseFloat(document.getElementById('purCost')?.value) || 0;
-  const price = parseFloat(document.getElementById('purPrice')?.value) || (cost > 0 ? cost * 1.25 : 100);
-  const rawIds = document.getElementById('purIdentifiers')?.value || '';
+  const name = $id('purName')?.value.trim();
+  const category = $id('purCategory')?.value || 'Electronics';
+  const barcode = $id('purBarcode')?.value.trim() || '';
+  const hsn = $id('purHsn')?.value.trim() || '8517';
+  const gst = parseInt($id('purGst')?.value, 10) || 18;
+  const qty = parseInt($id('purQty')?.value, 10) || 1;
+  const cost = parseFloat($id('purCost')?.value) || 0;
+  const price = parseFloat($id('purPrice')?.value) || (cost > 0 ? cost * 1.25 : 100);
+  const rawIds = $id('purIdentifiers')?.value || '';
   const idArray = rawIds.split(/[\n,]+/).map(s => s.trim()).filter(Boolean);
 
   if (!name || qty <= 0) return alert("Enter a valid Item Name and Quantity!");
@@ -1750,7 +1974,7 @@ function saveManualPurchase() {
   let targetItem;
   // Prefer the explicitly-picked product id; fall back to name match only
   // when the user typed a new product rather than selecting one.
-  const pickedId = document.getElementById('purExistingItemId')?.value;
+  const pickedId = $id('purExistingItemId')?.value;
   const existing = pickedId
     ? APP_STATE.inventory.find(i => i.id === pickedId)
     : APP_STATE.inventory.find(i => i.name.trim().toLowerCase() === name.trim().toLowerCase());
@@ -1795,10 +2019,11 @@ function saveManualPurchase() {
   // Record the supplier bill itself, not just the stock movement (P1 #4).
   recordPurchaseBill({
     vendor: {
-      name: document.getElementById('purVendor')?.value.trim() || '',
+      name: $id('purVendor')?.value.trim() || '',
       gstin: '', phone: '', stateCode: ''
     },
-    billNo: document.getElementById('purBillNo')?.value.trim() || '',
+    billNo: $id('purBillNo')?.value.trim() || '',
+    divisionName: $id('purDivision')?.value.trim() || '',
     items: [{
       id: targetItem.id, name: targetItem.name, hsn: targetItem.hsn,
       gst: targetItem.gst, qty, cost, price,
@@ -1819,7 +2044,7 @@ function saveManualPurchase() {
    ========================================================================== */
 APP_STATE.purchases = APP_STATE.purchases || [];
 
-function recordPurchaseBill({ vendor, billNo, items, source = 'manual' }) {
+function recordPurchaseBill({ vendor, billNo, divisionName = '', items, source = 'manual' }) {
   const lines = (items || []).filter(i => i.qty > 0);
   if (!lines.length) return;
 
@@ -1836,6 +2061,9 @@ function recordPurchaseBill({ vendor, billNo, items, source = 'manual' }) {
     idempotency_key: SyncEngine.generateIdempotencyKey(),
     vendor: vendor || {},
     billNo: billNo || '',
+    // Division is scoped server-side to its vendor (same name under two
+    // different companies must not collide) — see create_purchase_atomic.
+    divisionName: divisionName || '',
     billDate: new Date().toISOString().slice(0, 10),
     date: new Date().toLocaleDateString('en-IN'),
     timestamp: new Date().toISOString(),
@@ -1861,6 +2089,7 @@ function recordPurchaseBill({ vendor, billNo, items, source = 'manual' }) {
     SB.savePurchase(APP_STATE.tenantProfile.shopId, purchase).then(({ error }) => {
       if (isFatalSyncError(error)) SyncEngine.enqueue(purchase, 'purchase');
       updateSyncIndicator();
+      APP_STATE.vendorsLoaded = false; // force a refetch so the new/updated division shows up next time Khata → Vendors opens
     });
   } else {
     SyncEngine.enqueue(purchase, 'purchase');
@@ -1963,14 +2192,14 @@ function renderAiBillHeader(bill) {
 
   // Confidence is shown prominently rather than buried: a "low" badge is the
   // signal to check this bill against the paper before merging.
-  const badge = document.getElementById('aiConfidenceBadge');
+  const badge = $id('aiConfidenceBadge');
   if (badge) {
     const c = meta.confidence || 'medium';
     badge.className = `pill ${c === 'high' ? 'paid' : c === 'medium' ? 'pending' : 'overdue'}`;
     badge.innerText = `${c.toUpperCase()} CONFIDENCE`;
   }
 
-  const warnBox = document.getElementById('aiWarningsBox');
+  const warnBox = $id('aiWarningsBox');
   if (warnBox) {
     const warnings = meta.warnings || [];
     if (!warnings.length) {
@@ -1984,7 +2213,7 @@ function renderAiBillHeader(bill) {
 
   // Show the model's own total next to the derived one when they disagree —
   // the reviewer needs to see both numbers to decide which is right.
-  const cmp = document.getElementById('aiTotalCompare');
+  const cmp = $id('aiTotalCompare');
   if (cmp) {
     const printed = sum.printed_grand_total;
     if (printed && Math.abs(printed - (sum.grand_total || 0)) > 1) {
@@ -1997,7 +2226,7 @@ function renderAiBillHeader(bill) {
 }
 
 function renderAiStagingTable() {
-  const tbody = document.getElementById('aiStagingBody');
+  const tbody = $id('aiStagingBody');
   setTxt('aiStagingCount', APP_STATE.aiStagingItems.length);
   if (!tbody) return;
 
@@ -2183,9 +2412,9 @@ function openItemModal(item) {
   }
 
   APP_STATE.stagingItem = JSON.parse(JSON.stringify(item));
-  const modal = document.getElementById('attrModal');
+  const modal = $id('attrModal');
   setTxt('attrModalTitle', `${item.name} (${item.category})`);
-  const body = document.getElementById('attrModalBody');
+  const body = $id('attrModalBody');
   if (!body) return;
   body.innerHTML = '';
 
@@ -2195,7 +2424,7 @@ function openItemModal(item) {
 
   if (item.category === 'Electronics') {
     let serialOptionsHtml = `<option value="">-- Bill without Serial / Untracked (${Math.max(0, item.stock - serialList.length)} left) --</option>`;
-    serialList.forEach(s => { serialOptionsHtml += `<option value="${s}">IMEI: ${s}</option>`; });
+    serialList.forEach(s => { serialOptionsHtml += `<option value="${esc(s)}">IMEI: ${esc(s)}</option>`; });
 
     body.innerHTML = `
       <div class="form-input"><label>Select Registered IMEI / Serial</label><select id="mSerialSelect">${serialOptionsHtml}</select></div>
@@ -2205,12 +2434,12 @@ function openItemModal(item) {
     `;
   } else if (item.category === 'Jewelry') {
     let huidOptionsHtml = `<option value="">-- Select Registered HUID --</option>`;
-    huidList.forEach(h => { huidOptionsHtml += `<option value="${h}">HUID: ${h}</option>`; });
+    huidList.forEach(h => { huidOptionsHtml += `<option value="${esc(h)}">HUID: ${esc(h)}</option>`; });
 
     body.innerHTML = `
       <div class="form-input"><label>Select Hallmark HUID</label><select id="mHuidSelect">${huidOptionsHtml}</select></div>
       <div class="form-input"><label>Or Type New HUID</label><input type="text" id="mCustomHuid" placeholder="e.g. HUID-A92B1"></div>
-      <div class="form-input"><label>Purity / Karat</label><input type="text" id="mKarat" value="${item.meta?.karat || '22K'}"></div>
+      <div class="form-input"><label>Purity / Karat</label><input type="text" id="mKarat" value="${esc(item.meta?.karat || '22K')}"></div>
       <div class="form-input"><label>Gold Rate / gm (₹)</label><input type="number" id="mGoldRate" value="${APP_STATE.liveGoldRate}"></div>
       <div class="form-input"><label>Net Weight (Grams)</label><input type="number" step="0.001" id="mNetWt" value="${item.meta?.netWt || 5.0}"></div>
       <div class="form-input"><label>Making Charges (₹)</label><input type="number" id="mMaking" value="${item.meta?.making || 1500}"></div>
@@ -2218,12 +2447,12 @@ function openItemModal(item) {
     `;
   } else if (item.category === 'Pharmacy') {
     let batchOptionsHtml = `<option value="">-- Select Batch --</option>`;
-    batchList.forEach(b => { batchOptionsHtml += `<option value="${b.batch}">Batch: ${b.batch} (Exp: ${b.expiry})</option>`; });
+    batchList.forEach(b => { batchOptionsHtml += `<option value="${esc(b.batch)}">Batch: ${esc(b.batch)} (Exp: ${esc(b.expiry)})</option>`; });
 
     body.innerHTML = `
       <div class="form-input"><label>Select Batch</label><select id="mBatchSelect">${batchOptionsHtml}</select></div>
-      <div class="form-input"><label>Or Type Batch No</label><input type="text" id="mBatch" value="${item.meta?.batch || ''}"></div>
-      <div class="form-input"><label>Expiry Date</label><input type="month" id="mExp" value="${item.meta?.expiry || ''}"></div>
+      <div class="form-input"><label>Or Type Batch No</label><input type="text" id="mBatch" value="${esc(item.meta?.batch || '')}"></div>
+      <div class="form-input"><label>Expiry Date</label><input type="month" id="mExp" value="${esc(item.meta?.expiry || '')}"></div>
       <div class="form-input"><label>Rate (₹)</label><input type="number" id="mPrice" value="${item.price}"></div>
       <div class="form-input"><label>Quantity</label><input type="number" id="mQty" value="1" min="1" max="${item.stock}"></div>
     `;
@@ -2236,7 +2465,7 @@ function openItemModal(item) {
   setStep(2);
   if (modal) modal.classList.add('open');
 }
-function closeModal() { const m = document.getElementById('attrModal'); if (m) m.classList.remove('open'); }
+function closeModal() { const m = $id('attrModal'); if (m) m.classList.remove('open'); }
 
 // Rounds to 2 decimals safely — prevents floating-point drift (0.1+0.2 style
 // errors) from silently accumulating across a cart with many line items.
@@ -2244,8 +2473,8 @@ function r2(n) { return Math.round((n + Number.EPSILON) * 100) / 100; }
 
 function commitModalItem() {
   const it = APP_STATE.stagingItem;
-  let qty = parseInt(document.getElementById('mQty')?.value, 10) || 1;
-  let price = parseFloat(document.getElementById('mPrice')?.value);
+  let qty = parseInt($id('mQty')?.value, 10) || 1;
+  let price = parseFloat($id('mPrice')?.value);
   if (price === undefined || isNaN(price)) price = it.price;
 
   // Guard rails: a 0/negative qty or price should never reach a saved
@@ -2256,22 +2485,22 @@ function commitModalItem() {
 
   let assignedIdentifier = '';
   if (it.category === 'Electronics') {
-    const sel = document.getElementById('mSerialSelect')?.value.trim();
-    const cust = document.getElementById('mCustomSerial')?.value.trim();
+    const sel = $id('mSerialSelect')?.value.trim();
+    const cust = $id('mCustomSerial')?.value.trim();
     assignedIdentifier = cust || sel || '';
     it.meta.imei = assignedIdentifier;
   } else if (it.category === 'Jewelry') {
-    const sel = document.getElementById('mHuidSelect')?.value.trim();
-    const cust = document.getElementById('mCustomHuid')?.value.trim();
+    const sel = $id('mHuidSelect')?.value.trim();
+    const cust = $id('mCustomHuid')?.value.trim();
     assignedIdentifier = cust || sel || '';
     it.meta.huid = assignedIdentifier;
-    const netWt = parseFloat(document.getElementById('mNetWt')?.value) || 0;
-    const rate = parseFloat(document.getElementById('mGoldRate')?.value) || APP_STATE.liveGoldRate;
-    const making = parseFloat(document.getElementById('mMaking')?.value) || 0;
+    const netWt = parseFloat($id('mNetWt')?.value) || 0;
+    const rate = parseFloat($id('mGoldRate')?.value) || APP_STATE.liveGoldRate;
+    const making = parseFloat($id('mMaking')?.value) || 0;
     price = Math.max(0, (netWt * rate) + making);
   } else if (it.category === 'Pharmacy') {
-    const sel = document.getElementById('mBatchSelect')?.value.trim();
-    const cust = document.getElementById('mBatch')?.value.trim();
+    const sel = $id('mBatchSelect')?.value.trim();
+    const cust = $id('mBatch')?.value.trim();
     assignedIdentifier = cust || sel || '';
     it.meta.batch = assignedIdentifier;
   }
@@ -2311,7 +2540,7 @@ function commitModalItem() {
 
 
 function renderCart() {
-  const tbody = document.getElementById('cartTableBody');
+  const tbody = $id('cartTableBody');
   if (!tbody) return;
   tbody.innerHTML = '';
   let taxable = 0, gstTotal = 0;
@@ -2337,7 +2566,7 @@ function renderCart() {
   setTxt('txtGst', `₹${gstTotal.toFixed(2)}`);
   setTxt('txtGrand', `₹${roundedGrand.toFixed(2)}`);
 
-  const qrBox = document.getElementById('posUpiQrBox');
+  const qrBox = $id('posUpiQrBox');
   if (qrBox && roundedGrand > 0) {
     qrBox.innerHTML = generateDynamicUpiQR(roundedGrand, `INV-${APP_STATE.invCounter}`);
   }
@@ -2348,13 +2577,13 @@ function removeCart(idx) { APP_STATE.cart.splice(idx, 1); renderCart(); }
 function setTender(mode, el) {
   setStep(5);
   APP_STATE.selectedTender = mode;
-  document.querySelectorAll('.btn-tender').forEach(b => b.classList.remove('active'));
+  $qa('.btn-tender').forEach(b => b.classList.remove('active'));
   if (el) el.classList.add('active');
 }
 
 function setStep(num) {
   for (let i = 1; i <= 6; i++) {
-    const chip = document.getElementById(`stepChip-${i}`);
+    const chip = $id(`stepChip-${i}`);
     if (chip) {
       chip.classList.toggle('active', i === num);
       chip.classList.toggle('done', i < num);
@@ -2363,8 +2592,8 @@ function setStep(num) {
 }
 function jumpToStep(n) {
   setStep(n);
-  if (n === 1) document.getElementById('barcodeSearch')?.focus();
-  if (n === 3) document.getElementById('custPhone')?.focus();
+  if (n === 1) $id('barcodeSearch')?.focus();
+  if (n === 3) $id('custPhone')?.focus();
 }
 
 /* ==========================================================================
@@ -2487,7 +2716,10 @@ function handleLogoUpload(event) {
       }
     };
     img.onerror = () => setTxt('logoStatus', "That file couldn't be read as an image.");
-    img.src = reader.result;
+    // readAsDataURL always resolves reader.result to a string (never
+    // ArrayBuffer, which only happens with readAsArrayBuffer) — cast
+    // reflects that guarantee rather than changing it.
+    img.src = /** @type {string} */ (reader.result);
   };
   reader.onerror = () => setTxt('logoStatus', 'Could not read the file.');
   reader.readAsDataURL(file);
@@ -2510,22 +2742,22 @@ function applyShopLogo() {
   const logo = p.logo || '';
   const initial = (p.shopName || 'B').trim().slice(0, 2).toUpperCase();
 
-  const preview = document.getElementById('logoPreview');
+  const preview = $id('logoPreview');
   if (preview) {
     preview.innerHTML = logo
       ? `<img src="${logo}" alt="Shop logo">`
       : esc(initial);
   }
-  const removeBtn = document.getElementById('logoRemoveBtn');
+  const removeBtn = $id('logoRemoveBtn');
   if (removeBtn) removeBtn.style.display = logo ? 'inline-flex' : 'none';
 
-  const pLogo = document.getElementById('pLogo');
+  const pLogo = $id('pLogo');
   if (pLogo) {
     if (logo) { pLogo.src = logo; pLogo.style.display = 'block'; }
     else { pLogo.style.display = 'none'; }
   }
 
-  const sidebarLogo = document.getElementById('sidebarLogoBox');
+  const sidebarLogo = $id('sidebarLogoBox');
   if (sidebarLogo) {
     sidebarLogo.innerHTML = logo
       ? `<img src="${logo}" alt="" style="width:100%; height:100%; object-fit:cover; border-radius:inherit;">`
@@ -2540,13 +2772,13 @@ function renderAlertCentre() {
   const exp = getExpiryAlerts();
   const total = low.length + exp.length;
 
-  const badge = document.getElementById('alertBadge');
+  const badge = $id('alertBadge');
   if (badge) {
     badge.innerText = total > 99 ? '99+' : String(total);
     badge.style.display = total ? 'inline-flex' : 'none';
   }
 
-  const panel = document.getElementById('alertPanelBody');
+  const panel = $id('alertPanelBody');
   if (!panel) return;
 
   if (!total) {
@@ -2575,11 +2807,7 @@ function renderAlertCentre() {
   }
 
   if (low.length) {
-    const totalMatching = filtered.length;
-  const pageLimit = APP_STATE.catalogPage * PAGE_SIZE;
-  const visible = filtered.slice(0, pageLimit);
-
-  const { lowStock } = getAlertThresholds();
+    const { lowStock } = getAlertThresholds();
     html += `<div class="alert-group">
       <h5>Low stock · threshold ${lowStock}</h5>` +
       low.slice(0, 15).map(i => `
@@ -2597,7 +2825,7 @@ function renderAlertCentre() {
 }
 
 function toggleAlertPanel() {
-  const panel = document.getElementById('alertPanel');
+  const panel = $id('alertPanel');
   if (!panel) return;
   const opening = !panel.classList.contains('open');
   panel.classList.toggle('open', opening);
@@ -2606,8 +2834,8 @@ function toggleAlertPanel() {
 
 function saveAlertSettings() {
   const p = APP_STATE.tenantProfile;
-  const low = parseInt(document.getElementById('cfgLowStock')?.value, 10);
-  const days = parseInt(document.getElementById('cfgExpiryDays')?.value, 10);
+  const low = parseInt($id('cfgLowStock')?.value, 10);
+  const days = parseInt($id('cfgExpiryDays')?.value, 10);
   p.lowStockThreshold = Number.isFinite(low) && low >= 0 ? low : 5;
   p.expiryWarnDays = Number.isFinite(days) && days >= 0 ? days : 30;
   persistState();
@@ -2616,11 +2844,274 @@ function saveAlertSettings() {
   showSaasToast('Alert thresholds saved.', 2500);
 }
 
+
+/* ==========================================================================
+   KHATA — PARTY LEDGER (Customers + Vendors)
+   Two distinct debt directions: customers owe the shop (receivable),
+   vendors are owed BY the shop (payable). Settling one never touches the
+   other's balance. Vendors already existed in Supabase (migration 0007)
+   but were never fetched into APP_STATE — invisible data until this.
+   ========================================================================== */
+APP_STATE.vendors = APP_STATE.vendors || [];
+APP_STATE.khataTab = 'customers';
+APP_STATE.khataSearch = '';
+APP_STATE.khataFilter = 'all';
+
+function setKhataTab(tab) {
+  APP_STATE.khataTab = tab;
+  $id('khataTabCustomers')?.classList.toggle('active', tab === 'customers');
+  $id('khataTabVendors')?.classList.toggle('active', tab === 'vendors');
+  renderKhataView();
+}
+
+async function renderKhataView() {
+  if (APP_STATE.khataTab === 'vendors' && !APP_STATE.vendorsLoaded && APP_STATE.cloudSession) {
+    const { data } = await SB.fetchVendors(APP_STATE.tenantProfile.shopId);
+    APP_STATE.vendors = (data || []).map(v => ({
+      id: v.id, name: v.name, phone: v.phone || '', gstin: v.gstin || '',
+      pan: v.pan || '', drugLicenseNo: v.drug_license_no || '',
+      address: v.address || '', payables: Number(v.payables) || 0,
+      isStarred: !!v.is_starred
+    }));
+    APP_STATE.vendorsLoaded = true;
+  }
+
+  const isVendorTab = APP_STATE.khataTab === 'vendors';
+  let list = isVendorTab ? APP_STATE.vendors : APP_STATE.customers;
+  const grid = $id('khataGrid');
+  const summaryRow = $id('khataSummaryRow');
+  if (!grid) return;
+
+  const balanceOf = p => isVendorTab ? (p.payables || 0) : (p.dues || 0);
+
+  const q = (APP_STATE.khataSearch || '').trim().toLowerCase();
+  if (q) list = list.filter(p => p.name.toLowerCase().includes(q) || (p.phone || '').includes(q));
+
+  if (APP_STATE.khataFilter === 'starred') list = list.filter(p => p.isStarred);
+  else if (APP_STATE.khataFilter === 'frequent') list = list.filter(p => p.isFrequent || p.isStarred);
+  else if (APP_STATE.khataFilter === 'due') list = list.filter(p => balanceOf(p) > 0.005);
+
+  const owingAll = (isVendorTab ? APP_STATE.vendors : APP_STATE.customers).filter(p => balanceOf(p) > 0.005);
+  const totalOwed = TaxEngine.round2(owingAll.reduce((s, p) => s + balanceOf(p), 0));
+
+  if (summaryRow) {
+    summaryRow.innerHTML = `
+      <div class="khata-stat">
+        <span class="khata-stat-label">${isVendorTab ? 'You owe suppliers' : 'Customers owe you'}</span>
+        <strong class="khata-stat-value ${isVendorTab ? 'danger' : 'ok'}">₹${totalOwed.toLocaleString('en-IN')}</strong>
+      </div>
+      <div class="khata-stat">
+        <span class="khata-stat-label">Parties with a balance</span>
+        <strong class="khata-stat-value">${owingAll.length}</strong>
+      </div>`;
+  }
+
+  if (!list.length) {
+    grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;">
+      <div class="es-ico">${isVendorTab ? '🚚' : '👥'}</div>
+      <h4>No ${isVendorTab ? 'vendors' : 'customers'} match</h4>
+      <p>${q || APP_STATE.khataFilter !== 'all' ? 'Try clearing the search or filter.' : (isVendorTab ? 'Vendors appear here after your first Inward Purchase.' : 'Customers appear here after their first sale.')}</p>
+    </div>`;
+    return;
+  }
+
+  grid.innerHTML = [...list].sort((a, b) => balanceOf(b) - balanceOf(a)).map(p => {
+    const balance = balanceOf(p);
+    const settled = balance <= 0.005;
+    const isFrequent = !isVendorTab && p.isFrequent;
+    return `<div class="khata-card ${settled ? 'settled' : (isVendorTab ? 'payable' : 'receivable')}">
+      <div class="khata-card-top">
+        <div>
+          <strong>${p.isStarred ? '⭐ ' : ''}${esc(p.name)}</strong>
+          ${isFrequent ? '<span class="pill info" style="margin-left:6px;">Frequent</span>' : ''}
+          <p class="khata-card-phone">${esc(p.phone || 'No phone on file')}</p>
+        </div>
+        <span class="khata-balance ${settled ? 'zero' : (isVendorTab ? 'payable' : 'receivable')}">
+          ${settled ? 'Settled' : `₹${balance.toLocaleString('en-IN')}`}
+        </span>
+      </div>
+      <div class="khata-card-actions">
+        ${!isVendorTab ? `<button class="btn-pill secondary" style="flex:1;" onclick="switchView('reports'); openReport('cust_360', '${esc(p.phone)}');">View 360</button>` : `<button class="btn-pill secondary" style="flex:1;" onclick="openVendorEditModal('${esc(p.id)}')">Details</button>`}
+        ${!settled ? `<button class="btn-pill primary" style="flex:1;" onclick="openSettlementModal('${isVendorTab ? 'vendor' : 'customer'}', '${esc(p.id || p.phone)}')">Settle</button>` : ''}
+        ${!isVendorTab && !settled && p.phone ? `<button class="btn-pill ghost" onclick="sendWhatsAppReminder('${esc(p.phone)}')" title="Send WhatsApp reminder">💬</button>` : ''}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function handleKhataSearch(value) {
+  APP_STATE.khataSearch = value;
+  renderKhataView();
+}
+
+function setKhataFilter(filter, el) {
+  APP_STATE.khataFilter = filter;
+  $qa('.khata-filter-chip').forEach(c => c.classList.remove('active'));
+  if (el) el.classList.add('active');
+  renderKhataView();
+}
+
+function openSettlementModal(kind, id) {
+  const party = kind === 'vendor'
+    ? APP_STATE.vendors.find(v => v.id === id)
+    : APP_STATE.customers.find(c => c.phone === id);
+  if (!party) return;
+
+  APP_STATE.settlementTarget = { kind, id };
+  setTxt('settlementModalTitle', kind === 'vendor' ? 'Pay Supplier' : 'Record Payment');
+  setTxt('settlementPartyName', party.name);
+  setTxt('settlementAmountLabel', kind === 'vendor' ? 'Amount Paid' : 'Amount Received');
+  const balance = kind === 'vendor' ? party.payables : party.dues;
+  setTxt('settlementCurrentDue', `₹${(balance || 0).toFixed(2)}`);
+  setVal('settlementAmount', (balance || 0).toFixed(2));
+  $id('settlementModal')?.classList.add('open');
+}
+
+function closeSettlementModal() {
+  $id('settlementModal')?.classList.remove('open');
+  APP_STATE.settlementTarget = null;
+}
+
+async function submitSettlement() {
+  const target = APP_STATE.settlementTarget;
+  if (!target) return;
+
+  const amount = parseFloat($id('settlementAmount')?.value);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    showSaasToast('Enter a valid settlement amount.', 3000, 'err');
+    return;
+  }
+  const mode = $id('settlementMode')?.value || 'Cash';
+
+  if (target.kind === 'vendor') {
+    const v = APP_STATE.vendors.find(x => x.id === target.id);
+    if (!v) return;
+    v.payables = Math.max(0, TaxEngine.round2(v.payables - amount));
+    if (APP_STATE.cloudSession) {
+      SB.client.from('vendors').update({ payables: v.payables }).eq('id', v.id)
+        .then(({ error }) => { if (error) console.warn('Vendor settlement sync failed:', error.message); });
+    }
+    showSaasToast(`₹${amount.toFixed(2)} paid to ${v.name} via ${mode}.`, 3000);
+  } else {
+    const c = APP_STATE.customers.find(x => x.phone === target.id);
+    if (!c) return;
+    c.dues = Math.max(0, TaxEngine.round2(c.dues - amount));
+    persistState();
+    if (APP_STATE.cloudSession && c.id) {
+      SB.upsertCustomer(APP_STATE.tenantProfile.shopId, {
+        phone: c.phone, name: c.name, gstin: c.gstin || null,
+        dues: c.dues, total_orders_val: c.totalOrdersVal || 0
+      }).then(({ error }) => { if (error) console.warn('Customer settlement sync failed:', error.message); });
+    }
+    showSaasToast(`₹${amount.toFixed(2)} recorded from ${c.name} via ${mode}.`, 3000);
+  }
+
+  closeSettlementModal();
+  renderKhataView();
+  renderDashboard();
+}
+
+async function openVendorEditModal(vendorId) {
+  const v = APP_STATE.vendors.find(x => x.id === vendorId);
+  if (!v) return;
+  APP_STATE.editingVendorId = vendorId;
+
+  setVal('vendEditName', v.name);
+  setVal('vendEditPhone', v.phone || '');
+  setVal('vendEditAddress', v.address || '');
+  setVal('vendEditGstin', v.gstin || '');
+  setVal('vendEditPan', v.pan || '');
+  setVal('vendEditDrugLicense', v.drugLicenseNo || '');
+  setTxt('vendEditPayables', `₹${(v.payables || 0).toFixed(2)}`);
+
+  const divList = $id('vendDivisionsList');
+  if (divList) {
+    divList.innerHTML = `<span style="color:var(--text-muted); font-size:0.8rem;">Loading divisions…</span>`;
+    const { data } = await SB.fetchVendorDivisions(APP_STATE.tenantProfile.shopId, vendorId);
+    divList.innerHTML = (data || []).length
+      ? data.map(d => `<span class="pill info">${esc(d.name)}</span>`).join(' ')
+      : `<span style="color:var(--text-muted); font-size:0.8rem;">No divisions recorded yet — add one during Inward Purchase.</span>`;
+  }
+
+  $id('vendorEditModal')?.classList.add('open');
+}
+
+function closeVendorEditModal() {
+  $id('vendorEditModal')?.classList.remove('open');
+  APP_STATE.editingVendorId = null;
+}
+
+function saveVendorEdit() {
+  const v = APP_STATE.vendors.find(x => x.id === APP_STATE.editingVendorId);
+  if (!v) return;
+
+  v.name = $id('vendEditName')?.value.trim() || v.name;
+  v.phone = $id('vendEditPhone')?.value.trim() || '';
+  v.address = $id('vendEditAddress')?.value.trim() || '';
+  v.gstin = $id('vendEditGstin')?.value.trim() || '';
+  v.pan = $id('vendEditPan')?.value.trim().toUpperCase() || '';
+  v.drugLicenseNo = $id('vendEditDrugLicense')?.value.trim() || '';
+
+  if (APP_STATE.cloudSession) {
+    SB.updateVendorDetails(v.id, {
+      name: v.name, phone: v.phone || null, address: v.address || null,
+      gstin: v.gstin || null, pan: v.pan || null, drug_license_no: v.drugLicenseNo || null
+    }).then(({ error }) => { if (error) showSaasToast(`Sync failed: ${error}`, 3500, 'err'); });
+  }
+
+  closeVendorEditModal();
+  renderKhataView();
+  showSaasToast('Vendor details updated.', 2500);
+}
+
+function toggleVendorStar() {
+  const v = APP_STATE.vendors.find(x => x.id === APP_STATE.editingVendorId);
+  if (!v) return;
+  v.isStarred = !v.isStarred;
+  if (APP_STATE.cloudSession) SB.setVendorStar(v.id, v.isStarred);
+  renderKhataView();
+}
+
+function sendWhatsAppReminder(phone) {
+  const cust = APP_STATE.customers.find(c => c.phone === phone);
+  if (!cust) return;
+
+  const shopName = APP_STATE.tenantProfile.shopName || 'us';
+  const message = `Hello ${cust.name}, this is a friendly reminder from ${shopName}. ` +
+    `Your outstanding balance is ₹${(cust.dues || 0).toFixed(2)}. ` +
+    `Please settle at your convenience. Thank you!`;
+
+  let digits = phone.replace(/\D/g, '');
+  if (digits.length === 10) digits = '91' + digits;
+
+  window.open(`https://wa.me/${digits}?text=${encodeURIComponent(message)}`, '_blank');
+}
+
+function exportKhataToExcel() {
+  const isVendorTab = APP_STATE.khataTab === 'vendors';
+  const list = isVendorTab ? APP_STATE.vendors : APP_STATE.customers;
+  if (!list.length) { showSaasToast('Nothing to export.', 2500, 'err'); return; }
+
+  const headers = isVendorTab
+    ? ['Vendor', 'Phone', 'GSTIN', 'PAN', 'Drug License', 'Payable (₹)']
+    : ['Customer', 'Phone', 'GSTIN', 'PAN', 'Drug License', 'Due (₹)', 'Lifetime Value (₹)'];
+
+  const rows = list.map(p => isVendorTab
+    ? [p.name, p.phone, p.gstin || '', p.pan || '', p.drugLicenseNo || '', p.payables || 0]
+    : [p.name, p.phone, p.gstin || '', p.pan || '', p.drugLicenseNo || '', p.dues || 0, p.totalOrdersVal || 0]);
+
+  exportToExcel(
+    `khata-${isVendorTab ? 'vendors' : 'customers'}-${new Date().toISOString().slice(0, 10)}`,
+    isVendorTab ? 'Vendor Payables' : 'Customer Receivables',
+    headers, rows
+  );
+}
+
 /* Composition matching lives in alertEngine.js (loaded first). */
 
 function showAlternativesFor(item) {
   const alts = findAlternatives(item);
-  const box = document.getElementById('altSuggestBox');
+  const box = $id('altSuggestBox');
   if (!box) return;
 
   if (!alts.length) {
@@ -2632,7 +3123,7 @@ function showAlternativesFor(item) {
   box.innerHTML = `
     <div class="alt-head">
       <strong>${esc(item.name)} is out of stock</strong>
-      <button onclick="document.getElementById('altSuggestBox').style.display='none'" aria-label="Dismiss">✕</button>
+      <button onclick="$id('altSuggestBox').style.display='none'" aria-label="Dismiss">✕</button>
     </div>
     <p class="alt-sub">In-stock alternatives with the same composition:</p>
     ${alts.map(({ alt, exact }) => `
@@ -2652,9 +3143,127 @@ function showAlternativesFor(item) {
 function selectAlternative(itemId) {
   const item = (APP_STATE.inventory || []).find(i => i.id === itemId);
   if (!item) return;
-  const box = document.getElementById('altSuggestBox');
+  const box = $id('altSuggestBox');
   if (box) box.style.display = 'none';
   openItemModal(item);
+}
+
+
+/* ==========================================================================
+   INVOICE ACTION POPUP
+   Clicking any invoice row opens this rather than navigating away. Four
+   actions, and each one is honest about its actual scope:
+
+   - Download / Re-print: reuse the exact same print pipeline checkout
+     already uses (PrinterEngine + printA4Invoice), so a re-print is
+     byte-identical to the original, never a re-derived approximation.
+   - Edit: contact details ONLY (name/phone/address on the record). GST law
+     does not allow amending amounts or items on an issued tax invoice —
+     that correction path is a credit note, which this app already has.
+     Faking a full "edit invoice" would let someone quietly alter a filed
+     tax document, which is the kind of feature this app should refuse to
+     have rather than build unsafely.
+   - Cancel / Return: does not invent a parallel cancellation mechanism.
+     It opens the existing, tested Return modal pre-selected to return
+     every line — the correct, audit-safe way to void a sale.
+   ========================================================================== */
+function openInvoiceActionPopup(invoiceNo) {
+  const sale = APP_STATE.sales.find(s => s.invoiceNo === invoiceNo);
+  if (!sale) { showSaasToast('Invoice not found.', 3000, 'err'); return; }
+
+  APP_STATE.iapInvoiceNo = invoiceNo;
+  setTxt('iapInvoiceNo', invoiceNo);
+  setTxt('iapCustomer', sale.customer?.name || 'Cash Customer');
+  setTxt('iapDate', sale.date);
+  setTxt('iapTender', sale.tender);
+  setTxt('iapTotal', `₹${(sale.total || 0).toFixed(2)}`);
+
+  const statusEl = $id('iapStatus');
+  if (statusEl) {
+    const map = { returned: ['overdue', 'RETURNED'], partially_returned: ['pending', 'PARTIALLY RETURNED'], cancelled: ['draft', 'CANCELLED'] };
+    const [cls, label] = map[sale.status] || ['paid', 'ACTIVE'];
+    statusEl.innerHTML = `<span class="pill ${cls}">${label}</span>`;
+  }
+
+  const cancelBtn = $id('iapCancelBtn');
+  if (cancelBtn) {
+    const fullyDone = sale.status === 'returned' || sale.status === 'cancelled';
+    cancelBtn.disabled = fullyDone;
+    cancelBtn.style.opacity = fullyDone ? '0.5' : '1';
+    cancelBtn.title = fullyDone ? 'This invoice has already been fully returned or cancelled.' : '';
+  }
+
+  setDisplay('iapEditPanel', 'none');
+  $id('invoiceActionModal')?.classList.add('open');
+}
+
+function closeInvoiceActionPopup() {
+  $id('invoiceActionModal')?.classList.remove('open');
+  APP_STATE.iapInvoiceNo = null;
+}
+
+function getIapSale() {
+  return APP_STATE.sales.find(s => s.invoiceNo === APP_STATE.iapInvoiceNo);
+}
+
+function iapDownload() {
+  const sale = getIapSale();
+  if (!sale) return;
+  printA4Invoice(sale);
+  window.print(); // "Download" via the browser's own Save as PDF — matches
+                   // exactly what was printed at checkout, not a re-render.
+  closeInvoiceActionPopup();
+}
+
+function iapPrint() {
+  const sale = getIapSale();
+  if (!sale) return;
+  printA4Invoice(sale);
+  PrinterEngine.dispatchPrint(sale); // same routing checkout uses: thermal if configured, else A4 dialog
+  closeInvoiceActionPopup();
+}
+
+function iapOpenEdit() {
+  const sale = getIapSale();
+  if (!sale) return;
+  setVal('iapEditName', sale.customer?.name || '');
+  setVal('iapEditPhone', sale.customer?.phone || '');
+  setVal('iapEditAddress', sale.customer?.address || '');
+  setDisplay('iapEditPanel', 'block');
+}
+
+function iapSaveEdit() {
+  const sale = getIapSale();
+  if (!sale) return;
+
+  sale.customer = sale.customer || {};
+  sale.customer.name = $id('iapEditName')?.value.trim() || sale.customer.name;
+  sale.customer.phone = $id('iapEditPhone')?.value.trim() || sale.customer.phone;
+  sale.customer.address = $id('iapEditAddress')?.value.trim() || '';
+
+  persistState();
+
+  // Sync just the customer_snapshot column — never touches items/totals/tax,
+  // matching the "contact details only" scope enforced in the UI above.
+  if (APP_STATE.cloudSession && sale.cloudId) {
+    SB.client.from('sales').update({ customer_snapshot: sale.customer }).eq('id', sale.cloudId)
+      .then(({ error }) => { if (error) console.warn('Invoice contact update sync failed:', error.message); });
+  }
+
+  showSaasToast('Contact details updated on this invoice.', 2500);
+  setDisplay('iapEditPanel', 'none');
+  renderDashboard();
+}
+
+function iapOpenCancel() {
+  const sale = getIapSale();
+  if (!sale || sale.status === 'returned' || sale.status === 'cancelled') return;
+  closeInvoiceActionPopup();
+  // Hands off to the existing, tested return flow rather than inventing a
+  // second path — openReturnModal already pre-fills full returnable
+  // quantities, so this is already "cancel the whole invoice" by default;
+  // the owner can still reduce quantities if only part should be reversed.
+  openReturnModal(sale.invoiceNo);
 }
 
 /* ==========================================================================
@@ -2699,11 +3308,11 @@ function openReturnModal(invoiceNo) {
   };
 
   renderReturnModal();
-  document.getElementById('returnModal')?.classList.add('open');
+  $id('returnModal')?.classList.add('open');
 }
 
 function closeReturnModal() {
-  document.getElementById('returnModal')?.classList.remove('open');
+  $id('returnModal')?.classList.remove('open');
   APP_STATE.returnDraft = null;
 }
 
@@ -2715,7 +3324,7 @@ function renderReturnModal() {
   setTxt('retCustomer', `${d.sale.customer?.name || 'Cash Customer'} · ${d.sale.customer?.phone || '-'}`);
   setTxt('retTaxMode', d.sale.interstate ? 'IGST (inter-state)' : 'CGST + SGST (intra-state)');
 
-  const body = document.getElementById('retLinesBody');
+  const body = $id('retLinesBody');
   if (!body) return;
 
   body.innerHTML = d.lines.map((l, idx) => {
@@ -2790,7 +3399,7 @@ function updateReturnTotals() {
 
   // Show the split the same way the invoice did, so the credit note is
   // legible next to the original bill.
-  const splitEl = document.getElementById('retGstSplit');
+  const splitEl = $id('retGstSplit');
   if (splitEl) {
     if (r.gstTotal === 0) { splitEl.innerText = ''; }
     else if (interstate) { splitEl.innerText = `IGST reversed: ₹${r.gstTotal.toFixed(2)}`; }
@@ -2801,7 +3410,7 @@ function updateReturnTotals() {
     }
   }
 
-  const btn = document.getElementById('retSubmitBtn');
+  const btn = $id('retSubmitBtn');
   if (btn) btn.disabled = r.lines.length === 0;
 }
 
@@ -2813,8 +3422,8 @@ async function submitReturn() {
     return;
   }
 
-  const restock = !!document.getElementById('retRestock')?.checked;
-  const reason = document.getElementById('retReason')?.value.trim() || '';
+  const restock = !!$id('retRestock')?.checked;
+  const reason = $id('retReason')?.value.trim() || '';
 
   const creditNoteNo = `CN-${APP_STATE.cnCounter || 1}`;
   const ret = {
@@ -2830,7 +3439,7 @@ async function submitReturn() {
     items: r.lines
   };
 
-  const btn = document.getElementById('retSubmitBtn');
+  const btn = $id('retSubmitBtn');
   if (btn) { btn.disabled = true; btn.innerText = 'Processing…'; }
 
   // Local state first so the counter is never blocked on network, matching
@@ -2922,11 +3531,13 @@ async function reserveInvoiceNumber() {
 
 async function checkoutBill() {
   if (!APP_STATE.cart.length) return alert("Cart is empty!");
-  const phone = document.getElementById('custPhone')?.value.trim() || '-';
-  const name = document.getElementById('custName')?.value.trim() || 'Cash Customer';
-  const gstin = document.getElementById('custGstin')?.value.trim() || '';
-  const address = document.getElementById('custAddress')?.value.trim() || '';
-  const stateCode = document.getElementById('custState')?.value || '';
+  const phone = $id('custPhone')?.value.trim() || '-';
+  const name = $id('custName')?.value.trim() || 'Cash Customer';
+  const gstin = $id('custGstin')?.value.trim() || '';
+  const pan = $id('custPan')?.value.trim().toUpperCase() || '';
+  const drugLicenseNo = $id('custDrugLicense')?.value.trim() || '';
+  const address = $id('custAddress')?.value.trim() || '';
+  const stateCode = $id('custState')?.value || '';
 
   const totals = TaxEngine.computeInvoiceTotals(APP_STATE.cart);
   const interstate = TaxEngine.isInterstate({
@@ -2946,7 +3557,7 @@ async function checkoutBill() {
     date: new Date().toLocaleDateString('en-IN'),
     timestamp: new Date().toISOString(),
     customer: {
-      name, phone, gstin, address,
+      name, phone, gstin, pan, drugLicenseNo, address,
       stateCode,
       stateName: GST_STATE_CODES[stateCode] || ''
     },
@@ -2980,7 +3591,7 @@ async function checkoutBill() {
   if (phone !== '-') {
     let cust = APP_STATE.customers.find(c => c.phone === phone);
     if (!cust) {
-      cust = { phone, name, gstin, address, stateCode, dues: 0, totalOrdersVal: 0, orderHistory: [] };
+      cust = { phone, name, gstin, pan, drugLicenseNo, address, stateCode, dues: 0, totalOrdersVal: 0, orderHistory: [] };
       APP_STATE.customers.push(cust);
     } else {
       // Keep the party record current — a customer who gives their address
@@ -2988,6 +3599,8 @@ async function checkoutBill() {
       if (address) cust.address = address;
       if (stateCode) cust.stateCode = stateCode;
       if (gstin) cust.gstin = gstin;
+      if (pan) cust.pan = pan;
+      if (drugLicenseNo) cust.drugLicenseNo = drugLicenseNo;
       if (name && name !== 'Cash Customer') cust.name = name;
     }
     if (APP_STATE.selectedTender === 'Khata') cust.dues += invoice.total;
@@ -3018,8 +3631,10 @@ async function checkoutBill() {
   setVal('custPhone', '');
   setVal('custName', '');
   setVal('custGstin', '');
+  setVal('custPan', '');
+  setVal('custDrugLicense', '');
   setVal('custAddress', '');
-  setVal('custState', '');
+  resetCustomerStateToShopDefault();
   updateTaxTypeHint();
   renderCart();
   renderCatalog();
@@ -3043,7 +3658,7 @@ const INDUSTRY_INVOICE_PROFILES = {
 
 function applyIndustryInvoiceTheme(industry) {
   const profile = INDUSTRY_INVOICE_PROFILES[industry] || INDUSTRY_INVOICE_PROFILES.All;
-  const sheet = document.getElementById('printSheet') || document.querySelector('.print-sheet');
+  const sheet = $id('printSheet') || $q('.print-sheet');
   if (sheet) {
     sheet.style.setProperty('--invoice-accent', profile.accent);
     // Jewelry gets a genuinely different frame, not just a colour swap —
@@ -3054,10 +3669,10 @@ function applyIndustryInvoiceTheme(industry) {
     sheet.classList.toggle('invoice-ornate', industry === 'Jewelry');
   }
 
-  const idHeader = document.getElementById('pIdColHeader');
+  const idHeader = $id('pIdColHeader');
   if (idHeader) idHeader.innerText = profile.idLabel;
 
-  const tagline = document.getElementById('pIndustryTagline');
+  const tagline = $id('pIndustryTagline');
   if (tagline) {
     tagline.innerText = profile.tagline;
     tagline.style.display = profile.tagline ? 'block' : 'none';
@@ -3074,7 +3689,7 @@ function printA4Invoice(inv) {
 
   // Address row hides itself entirely when blank — an invoice with an
   // empty "Address:" label looks like a broken template to a customer.
-  const addrRow = document.getElementById('pCustAddrRow');
+  const addrRow = $id('pCustAddrRow');
   if (addrRow) {
     if (inv.customer.address) {
       addrRow.style.display = 'block';
@@ -3092,8 +3707,8 @@ function printA4Invoice(inv) {
 
   applyIndustryInvoiceTheme(inv.industry || APP_STATE.tenantProfile.assignedIndustry);
 
-  const tbody = document.getElementById('pItemsBody');
-  const hsnBody = document.getElementById('pHsnBody');
+  const tbody = $id('pItemsBody');
+  const hsnBody = $id('pHsnBody');
   if (!tbody || !hsnBody) return;
   tbody.innerHTML = '';
   hsnBody.innerHTML = '';
@@ -3106,8 +3721,8 @@ function printA4Invoice(inv) {
       <tr>
         <td style="text-align:center;">${idx + 1}</td>
         <td>${esc(it.name)}</td>
-        <td style="text-align:center;">${it.hsn}</td>
-        <td>${it.assignedIdentifier || it.meta?.batch || '-'}</td>
+        <td style="text-align:center;">${esc(it.hsn)}</td>
+        <td>${esc(it.assignedIdentifier || it.meta?.batch || '-')}</td>
         <td style="text-align:center;">${it.qty}</td>
         <td style="text-align:right;">${it.price.toFixed(2)}</td>
         <td style="text-align:center;">${it.gst}%</td>
@@ -3122,7 +3737,7 @@ function printA4Invoice(inv) {
 
   renderHsnTaxBreakup(inv, hsnBody);
 
-  const pQrBox = document.getElementById('pUpiQrContainer');
+  const pQrBox = $id('pUpiQrContainer');
   if (pQrBox) {
     pQrBox.innerHTML = generateDynamicUpiQR(inv.total, inv.invoiceNo) + `<p style="font-size:7.5px; margin-top:2px;">Scan to Pay</p>`;
   }
@@ -3136,7 +3751,7 @@ function printA4Invoice(inv) {
    HSN-WISE TAX BREAKUP (CGST+SGST or IGST, per GST invoice rules)
    ========================================================================== */
 function renderHsnTaxBreakup(inv, hsnBody) {
-  const thead = document.getElementById('pTaxTableHead');
+  const thead = $id('pTaxTableHead');
   const interstate = !!inv.interstate;
 
   // Header must reflect the actual transaction type — showing CGST/SGST
@@ -3177,7 +3792,7 @@ function renderHsnTaxBreakup(inv, hsnBody) {
     }
   });
 
-  const roundOffRow = document.getElementById('pRoundOffRow');
+  const roundOffRow = $id('pRoundOffRow');
   if (roundOffRow) {
     if (inv.roundOff && Math.abs(inv.roundOff) >= 0.01) {
       roundOffRow.style.display = 'block';
@@ -3193,7 +3808,7 @@ function renderHsnTaxBreakup(inv, hsnBody) {
 /* ==========================================================================
    REPORTS & DASHBOARD CONTROLLER
    ========================================================================== */
-function openReport(reportKey) {
+function openReport(reportKey, presetPhone) {
   APP_STATE.currentReportKey = reportKey;
   setDisplay('reportsHubView', 'none');
   setDisplay('reportsDetailView', 'block');
@@ -3213,10 +3828,21 @@ function openReport(reportKey) {
   setDisplay('cust360HeaderStats', isC360 ? 'grid' : 'none');
 
   if (isC360) {
-    const dd = document.getElementById('cust360Dropdown');
-    if (dd) {
-      dd.innerHTML = APP_STATE.customers.map(c => `<option value="${esc(c.phone)}">${esc(c.name)} (${esc(c.phone)})</option>`).join('');
-      renderCustomer360Profile(dd.value);
+    // Search box replaced the old dropdown — deep-linking now just picks
+    // a specific customer directly, and otherwise shows the highest-value
+    // customer by default rather than an arbitrary first row.
+    const target = (presetPhone && APP_STATE.customers.some(c => c.phone === presetPhone))
+      ? APP_STATE.customers.find(c => c.phone === presetPhone)
+      : [...APP_STATE.customers].sort((a, b) => (b.totalOrdersVal || 0) - (a.totalOrdersVal || 0))[0];
+
+    if (target) {
+      setVal('cust360SearchInput', target.name);
+      renderCustomer360Profile(target.phone);
+    } else {
+      const thead = $id('drillTableHead');
+      if (thead) thead.innerHTML = '';
+      const tbody = $id('drillTableBody');
+      if (tbody) tbody.innerHTML = `<tr><td style="text-align:center; color:var(--text-muted); padding:24px;">No customers yet — search will populate once you have some.</td></tr>`;
     }
   } else {
     renderActiveReportData();
@@ -3234,7 +3860,7 @@ function openReport(reportKey) {
    the backend, not a client deploy.
    ========================================================================== */
 async function loadSubscriptionPanel() {
-  const block = document.getElementById('currentPlanBlock');
+  const block = $id('currentPlanBlock');
   if (!APP_STATE.cloudSession || !APP_STATE.tenantProfile.shopId) {
     setTxt('planName', 'Not signed in');
     setDisplay('planFreeBanner', 'none');
@@ -3261,7 +3887,7 @@ async function loadSubscriptionPanel() {
     ? `₹${Number(plan.price_monthly).toLocaleString('en-IN')} / month`
     : 'Free');
 
-  const pill = document.getElementById('planStatusPill');
+  const pill = $id('planStatusPill');
   if (pill) { pill.className = 'pill paid'; pill.innerText = 'Active'; }
 
   setTxt('planInvoiceUsage', plan.max_invoices_monthly
@@ -3271,7 +3897,7 @@ async function loadSubscriptionPanel() {
     ? `${usage.staff_accounts || 0} / ${plan.max_staff_accounts}`
     : `${usage.staff_accounts || 0} (unlimited)`);
 
-  const featureList = document.getElementById('planFeatureList');
+  const featureList = $id('planFeatureList');
   if (featureList) {
     const features = Array.isArray(plan.features) ? plan.features : [];
     featureList.innerHTML = features.map(f => `
@@ -3285,7 +3911,7 @@ async function loadSubscriptionPanel() {
 
   // Other plans, shown but never clickable — is_purchasable stays false
   // until the backend flips it, and this screen never fakes a checkout.
-  const otherList = document.getElementById('otherPlansList');
+  const otherList = $id('otherPlansList');
   if (otherList) {
     const others = (plans || []).filter(p => p.id !== plan.id);
     otherList.innerHTML = others.length
@@ -3356,8 +3982,8 @@ function drillDashboardCard(key) {
 }
 
 function renderDashDrillTable(key) {
-  const thead = document.getElementById('drillTableHead');
-  const tbody = document.getElementById('drillTableBody');
+  const thead = $id('drillTableHead');
+  const tbody = $id('drillTableBody');
   if (!thead || !tbody) return;
 
   const cfg = DASH_CARD_FILTERS[key];
@@ -3387,7 +4013,7 @@ function renderDashDrillTable(key) {
     if (s.status === 'returned') { pill = 'overdue'; label = 'RETURNED'; }
     else if (s.status === 'partially_returned') { pill = 'pending'; label = 'PART. RETURNED'; }
     else if (s.tender === 'Khata') {
-      const age = Math.floor((Date.now() - new Date(s.timestamp)) / 86400000);
+      const age = Math.floor((Date.now() - new Date(s.timestamp).getTime()) / 86400000);
       pill = age > 30 ? 'overdue' : 'pending';
       label = age > 30 ? `${age}D OVERDUE` : 'DUE';
     }
@@ -3418,8 +4044,8 @@ function closeReportDetail() {
 }
 
 function renderActiveReportData() {
-  const thead = document.getElementById('drillTableHead');
-  const tbody = document.getElementById('drillTableBody');
+  const thead = $id('drillTableHead');
+  const tbody = $id('drillTableBody');
   if (!thead || !tbody) return;
 
   // Dashboard drill-throughs render their own table shape.
@@ -3548,7 +4174,7 @@ function renderActiveReportData() {
       dayTaxable = r2(dayTaxable + (inv.taxable || 0));
       dayGst = r2(dayGst + (inv.gstTotal || 0));
       dayTotal = r2(dayTotal + (inv.total || 0));
-      tbody.innerHTML += `<tr><td><strong>${inv.invoiceNo}</strong></td><td>${inv.date}</td><td>${inv.customer?.name || 'Cash Customer'}</td><td>${inv.tender}</td><td style="text-align:right;">₹${(inv.taxable || 0).toFixed(2)}</td><td style="text-align:right;">₹${(inv.gstTotal || 0).toFixed(2)}</td><td style="text-align:right; font-weight:700;">₹${(inv.total || 0).toFixed(2)}</td></tr>`;
+      tbody.innerHTML += `<tr class="clickable-row" onclick="openInvoiceActionPopup('${esc(inv.invoiceNo)}')"><td><strong>${esc(inv.invoiceNo)}</strong></td><td>${inv.date}</td><td>${esc(inv.customer?.name || 'Cash Customer')}</td><td>${esc(inv.tender)}</td><td style="text-align:right;">₹${(inv.taxable || 0).toFixed(2)}</td><td style="text-align:right;">₹${(inv.gstTotal || 0).toFixed(2)}</td><td style="text-align:right; font-weight:700;">₹${(inv.total || 0).toFixed(2)}</td></tr>`;
     });
     if (APP_STATE.sales.length) {
       tbody.innerHTML += `<tr style="font-weight:800; border-top:2px solid #ccc;"><td colspan="4">TOTAL</td><td style="text-align:right;">₹${dayTaxable.toFixed(2)}</td><td style="text-align:right;">₹${dayGst.toFixed(2)}</td><td style="text-align:right;">₹${dayTotal.toFixed(2)}</td></tr>`;
@@ -3557,108 +4183,37 @@ function renderActiveReportData() {
 }
 
 function switchView(viewName, el) {
-  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
-  document.querySelectorAll('.mob-nav-item').forEach(n => n.classList.remove('active'));
-  document.querySelectorAll('.view-container').forEach(v => v.classList.remove('active'));
+  $qa('.nav-item').forEach(n => n.classList.remove('active'));
+  $qa('.mob-nav-item').forEach(n => n.classList.remove('active'));
+  $qa('.view-container').forEach(v => v.classList.remove('active'));
   closeSettingsPanel(); // never land on a stale open panel from a previous visit
 
   if (el) el.classList.add('active');
-  const target = document.getElementById(`view-${viewName}`);
+  const target = $id(`view-${viewName}`);
   if (target) target.classList.add('active');
 
   // Mobile nav's Settings icon has no `el` passed in from openSettingsHome()
   // (it calls switchView('settings') with no second arg) — mark it active
   // manually so the bottom bar still reflects where the user actually is.
   if (viewName === 'settings') {
-    document.querySelector('.mob-nav-item[onclick*="openSettingsHome"]')?.classList.add('active');
+    $q('.mob-nav-item[onclick*="openSettingsHome"]')?.classList.add('active');
   }
 
   if (viewName === 'dashboard') renderDashboard();
   if (viewName === 'pos') renderCatalog();
   if (viewName === 'inventory') renderInventoryTable();
-  if (viewName === 'khata') renderKhataGrid();
+  if (viewName === 'khata') renderKhataView();
   if (viewName === 'reports') closeReportDetail();
 }
 
 function filterReportsCategory(cat, btn) {
-  document.querySelectorAll('.rep-pill').forEach(p => p.classList.remove('active'));
+  $qa('.rep-pill').forEach(p => p.classList.remove('active'));
   if (btn) btn.classList.add('active');
-  const cards = document.querySelectorAll('.report-section-card');
+  const cards = $qa('.report-section-card');
   cards.forEach(c => {
     const cardCats = c.getAttribute('data-cat') || '';
     c.style.display = (cat === 'All' || cardCats.includes(cat)) ? 'flex' : 'none';
   });
-}
-
-function renderInventoryTable() {
-  const tbody = document.getElementById('invTableBody');
-  if (!tbody) return;
-
-  const rows = [...(APP_STATE.inventory || [])].sort((a, b) => a.name.localeCompare(b.name));
-  if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="7" style="text-align:center; color:var(--text-muted); padding:20px;">No stock items yet.</td></tr>`;
-    return;
-  }
-
-  tbody.innerHTML = rows.map(item => {
-    const low = Number.isFinite(item.lowStockLevel) ? item.lowStockLevel : (APP_STATE.tenantProfile?.lowStockThreshold ?? 5);
-    const stockState = item.stock <= 0 ? 'Out' : item.stock <= low ? 'Low' : 'OK';
-    const stateClass = item.stock <= 0 ? 'danger' : item.stock <= low ? 'warn' : 'ok';
-    const identifier = Array.isArray(item.serials) && item.serials.length
-      ? item.serials.slice(0, 2).join(', ') + (item.serials.length > 2 ? '…' : '')
-      : Array.isArray(item.huids) && item.huids.length
-        ? item.huids.slice(0, 2).join(', ') + (item.huids.length > 2 ? '…' : '')
-        : Array.isArray(item.batches) && item.batches.length
-          ? item.batches.map(b => `${b.batch || 'Batch'}${b.expiry ? ` (${b.expiry})` : ''}`).slice(0, 2).join(', ')
-          : '—';
-
-    return `<tr>
-      <td><strong>${esc(item.name)}</strong>${item.stock <= low && item.stock > 0 ? `<div class="tiny-note ${stateClass}">Reorder at ${low}</div>` : ''}</td>
-      <td>${esc(item.category || 'General')}</td>
-      <td><code>${esc(item.barcode || '—')}</code></td>
-      <td><code>${esc(identifier)}</code></td>
-      <td>${Number(item.gst ?? 0)}%</td>
-      <td>₹${Number(item.price || 0).toFixed(2)}</td>
-      <td><span class="pill ${stateClass}">${item.stock}</span> <small style="color:var(--text-muted);">${stockState}</small></td>
-    </tr>`;
-  }).join('');
-}
-
-function renderKhataGrid() {
-  const grid = document.getElementById('khataGrid');
-  if (!grid) return;
-
-  const customers = [...(APP_STATE.customers || [])].sort((a, b) => (b.dues || 0) - (a.dues || 0));
-  if (!customers.length) {
-    grid.innerHTML = `<div class="empty-state" style="padding:24px; grid-column:1 / -1;">No customer ledger entries yet.</div>`;
-    return;
-  }
-
-  grid.innerHTML = customers.map(c => {
-    const due = Number(c.dues || 0);
-    const life = Number(c.totalOrdersVal || 0);
-    const lastSale = (APP_STATE.sales || []).filter(s => s.customer?.phone === c.phone).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))[0];
-    const status = due > 0 ? 'Due' : 'Settled';
-    const statusClass = due > 0 ? 'pending' : 'paid';
-
-    return `<div class="khata-card" style="background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-md); padding:14px; display:flex; flex-direction:column; gap:8px;">
-      <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px;">
-        <div>
-          <strong style="font-size:0.96rem;">${esc(c.name || 'Unnamed Customer')}</strong>
-          <div style="font-size:0.75rem; color:var(--text-muted); margin-top:3px;">${esc(c.phone || 'No phone')}</div>
-        </div>
-        <span class="pill ${statusClass}">${status}</span>
-      </div>
-      <div style="display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:8px; font-size:0.78rem; color:var(--text-muted);">
-        <div><strong style="display:block; color:var(--text-dark);">₹${due.toLocaleString('en-IN', { maximumFractionDigits: 2 })}</strong>Due balance</div>
-        <div><strong style="display:block; color:var(--text-dark);">₹${life.toLocaleString('en-IN', { maximumFractionDigits: 2 })}</strong>Life value</div>
-      </div>
-      <div style="font-size:0.74rem; color:var(--text-muted); border-top:1px solid var(--border); padding-top:8px;">
-        ${lastSale ? `Last sale: ${esc(lastSale.invoiceNo || 'Invoice')} · ${esc(lastSale.date || '-')}` : 'No sales recorded yet'}
-      </div>
-      <button class="btn-pill secondary" style="width:100%;" onclick="renderCustomer360Profile('${esc(c.phone || '')}')">Open ledger</button>
-    </div>`;
-  }).join('');
 }
 
 function renderDashboard() {
@@ -3702,7 +4257,7 @@ function renderDashboard() {
   renderAlertCentre();
 
   // Recent Invoices table
-  const recentBody = document.getElementById('dashRecentOrdersBody');
+  const recentBody = $id('dashRecentOrdersBody');
   if (recentBody) {
     recentBody.innerHTML = '';
     if (!sales.length) {
@@ -3713,16 +4268,16 @@ function renderDashboard() {
       // and yesterday's are both "DUE", but only one needs chasing today.
       let cls = 'paid', label = 'PAID';
       if (s.tender === 'Khata') {
-        const ageDays = Math.floor((Date.now() - new Date(s.timestamp)) / 86400000);
+        const ageDays = Math.floor((Date.now() - new Date(s.timestamp).getTime()) / 86400000);
         cls = ageDays > 30 ? 'overdue' : 'pending';
         label = ageDays > 30 ? `${ageDays}D OVERDUE` : 'DUE';
       }
-      recentBody.innerHTML += `<tr><td><strong>${esc(s.invoiceNo)}</strong></td><td>${esc(s.customer?.name || 'Cash Customer')}</td><td>${s.date}</td><td><span class="pill ${cls}">${label}</span></td><td style="text-align:right; font-weight:700;">₹${(s.total || 0).toFixed(2)}</td></tr>`;
+      recentBody.innerHTML += `<tr class="clickable-row" onclick="openInvoiceActionPopup('${esc(s.invoiceNo)}')"><td><strong>${esc(s.invoiceNo)}</strong></td><td>${esc(s.customer?.name || 'Cash Customer')}</td><td>${s.date}</td><td><span class="pill ${cls}">${label}</span></td><td style="text-align:right; font-weight:700;">₹${(s.total || 0).toFixed(2)}</td></tr>`;
     });
   }
 
   // Top Parties by lifetime value
-  const topList = document.getElementById('topCustomersList');
+  const topList = $id('topCustomersList');
   if (topList) {
     const ranked = [...(APP_STATE.customers || [])].sort((a, b) => (b.totalOrdersVal || 0) - (a.totalOrdersVal || 0)).slice(0, 5);
     topList.innerHTML = ranked.length
@@ -3733,6 +4288,156 @@ function renderDashboard() {
 
 // Minimal dependency-free donut chart — avoids pulling in a charting
 // library just to draw four arcs; recomputed on every dashboard render.
+
+/* ==========================================================================
+   STOCK MASTER — full table render + edit-in-place
+   invTableBody was never populated by any function — this screen has been
+   silently dead since the table markup was written. Fixed properly: a real
+   render, an edit modal reusing the same fields the New Product modal
+   already validates, and every save syncs to Supabase the same way
+   commitModalItem's cart-add path does.
+   ========================================================================== */
+function renderInventoryTable() {
+  const tbody = $id('invTableBody');
+  if (!tbody) return;
+
+  const { lowStock } = getAlertThresholds();
+  const canSeeCost = APP_STATE.isOwner !== false;
+
+  if (!APP_STATE.inventory.length) {
+    tbody.innerHTML = `<tr><td colspan="7" style="text-align:center; padding:30px; color:var(--text-muted);">
+      No products yet. Use "+ Add Product" or Inward Purchase to add your first item.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = [...APP_STATE.inventory].sort((a, b) => a.name.localeCompare(b.name)).map(it => {
+    const threshold = Number.isFinite(it.lowStockLevel) ? it.lowStockLevel : lowStock;
+    const isOut = it.stock <= 0, isLow = !isOut && it.stock <= threshold;
+    const stockPill = isOut ? 'overdue' : (isLow ? 'pending' : 'paid');
+
+    const ids = [
+      ...(it.serials || []), ...(it.huids || []),
+      ...(it.batches || []).map(b => `${b.batch}${b.expiry ? ` (exp ${b.expiry})` : ''}`)
+    ];
+    const idText = ids.length
+      ? (ids.length <= 2 ? ids.map(esc).join(', ') : `${esc(ids[0])} +${ids.length - 1} more`)
+      : '<span style="color:var(--text-faint);">untracked</span>';
+
+    return `<tr>
+      <td>
+        <strong>${esc(it.name)}</strong>
+        ${it.meta?.composition ? `<br><small style="color:var(--brand); font-style:italic;">${esc(it.meta.composition)}</small>` : ''}
+      </td>
+      <td>${esc(it.category)}</td>
+      <td><code>${esc(it.barcode || it.hsn || '—')}</code></td>
+      <td style="font-size:0.78rem;">${idText}</td>
+      <td style="text-align:center;">${it.gst}%</td>
+      <td style="text-align:right;">
+        ₹${it.price.toFixed(2)}
+        ${canSeeCost ? `<br><small style="color:var(--text-muted);">cost ${fmtCost(it.cost)}</small>` : ''}
+      </td>
+      <td style="text-align:center;"><span class="pill ${stockPill}">${it.stock}</span></td>
+      <td style="text-align:center;">
+        <button class="btn-pill secondary admin-only" style="padding:5px 11px; font-size:0.74rem;" onclick="openEditStockModal('${it.id}')">Edit</button>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+function openEditStockModal(itemId) {
+  const item = APP_STATE.inventory.find(i => i.id === itemId);
+  if (!item) return;
+  APP_STATE.editingItemId = itemId;
+
+  setVal('editItemName', item.name);
+  setVal('editItemCategory', item.category);
+  setVal('editItemBarcode', item.barcode || '');
+  setVal('editItemHsn', item.hsn || '');
+  setVal('editItemGst', String(item.gst));
+  setVal('editItemPrice', item.price);
+  setVal('editItemCost', item.cost || '');
+  setVal('editItemStock', item.stock);
+  setVal('editItemLowStockLevel', item.lowStockLevel ?? '');
+  setVal('editItemComposition', item.meta?.composition || item.composition || '');
+
+  const costRow = $id('editItemCostRow');
+  if (costRow) costRow.style.display = APP_STATE.isOwner === false ? 'none' : 'block';
+
+  $id('editStockModal')?.classList.add('open');
+}
+
+function closeEditStockModal() {
+  $id('editStockModal')?.classList.remove('open');
+  APP_STATE.editingItemId = null;
+}
+
+function saveEditedStock() {
+  const item = APP_STATE.inventory.find(i => i.id === APP_STATE.editingItemId);
+  if (!item) return;
+
+  const name = $id('editItemName')?.value.trim();
+  if (!name) { showSaasToast('Product name is required.', 3000, 'err'); return; }
+
+  const newStock = parseInt($id('editItemStock')?.value, 10);
+  if (!Number.isFinite(newStock) || newStock < 0) {
+    showSaasToast('Stock quantity must be a valid non-negative number.', 3500, 'err');
+    return;
+  }
+
+  item.name = name;
+  item.category = $id('editItemCategory')?.value || item.category;
+  item.barcode = $id('editItemBarcode')?.value.trim() || '';
+  item.hsn = $id('editItemHsn')?.value.trim() || item.hsn;
+  item.gst = parseFloat($id('editItemGst')?.value) || item.gst;
+  item.price = parseFloat($id('editItemPrice')?.value) || 0;
+  item.stock = newStock;
+
+  const lowLevel = $id('editItemLowStockLevel')?.value;
+  item.lowStockLevel = lowLevel !== '' ? parseInt(lowLevel, 10) : undefined;
+
+  if (APP_STATE.isOwner !== false) {
+    const cost = parseFloat($id('editItemCost')?.value);
+    if (Number.isFinite(cost)) item.cost = cost;
+  }
+
+  if (item.category === 'Pharmacy') {
+    item.meta = item.meta || {};
+    item.meta.composition = $id('editItemComposition')?.value.trim() || '';
+    item.composition = item.meta.composition;
+  }
+
+  persistState();
+  syncItemToCloud(item); // same cloud path every other stock write already uses
+  renderInventoryTable();
+  renderCatalog();
+  renderAlertCentre();
+  closeEditStockModal();
+  showSaasToast(`${item.name} updated.`, 2500);
+}
+
+function deleteInventoryItemPrompt() {
+  const item = APP_STATE.inventory.find(i => i.id === APP_STATE.editingItemId);
+  if (!item) return;
+  if (item.stock > 0) {
+    showSaasToast(`Cannot delete "${item.name}" — it still has ${item.stock} unit(s) in stock. Set stock to 0 first.`, 5000, 'err');
+    return;
+  }
+  if (!confirm(`Remove "${item.name}" from your catalogue? This cannot be undone from here.`)) return;
+
+  APP_STATE.inventory = APP_STATE.inventory.filter(i => i.id !== item.id);
+  persistState();
+  renderInventoryTable();
+  renderCatalog();
+  closeEditStockModal();
+  showSaasToast(`${item.name} removed.`, 2500);
+
+  if (APP_STATE.cloudSession) {
+    SB.client.from('items').delete().eq('id', item.id).then(({ error }) => {
+      if (error) console.warn('Cloud delete failed:', error.message);
+    });
+  }
+}
+
 /* ==========================================================================
    RECEIVABLES AGEING
    Buckets unpaid Khata invoices by age. Falls back to putting a customer's
@@ -3760,7 +4465,7 @@ function computeReceivablesAgeing(asOf) {
   // credit sales, leaving genuinely old debt visible in the high brackets.
   const credit = (APP_STATE.sales || [])
     .filter(s => s.tender === 'Khata' && s.customer && byPhone[s.customer.phone])
-    .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+    .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
 
   credit.forEach(s => {
     const row = byPhone[s.customer.phone];
@@ -3771,7 +4476,7 @@ function computeReceivablesAgeing(asOf) {
     const amount = Math.min(s.total || 0, remaining);
     if (amount <= 0) return;
 
-    const days = Math.max(0, Math.floor((now - new Date(s.timestamp)) / DAY));
+    const days = Math.max(0, Math.floor((now.getTime() - new Date(s.timestamp).getTime()) / DAY));
     if (days <= 30) row.b30 = TaxEngine.round2(row.b30 + amount);
     else if (days <= 60) row.b60 = TaxEngine.round2(row.b60 + amount);
     else if (days <= 90) row.b90 = TaxEngine.round2(row.b90 + amount);
@@ -3820,7 +4525,7 @@ function renderKpiDeltas(sales) {
 
   const sum = arr => arr.reduce((a, s) => a + (s.total || 0), 0);
   const paint = (elId, currVal, prevVal) => {
-    const el = document.getElementById(elId);
+    const el = $id(elId);
     if (!el) return;
     if (!prevVal) { el.style.display = 'none'; return; }
     const pct = ((currVal - prevVal) / prevVal) * 100;
@@ -3835,7 +4540,7 @@ function renderKpiDeltas(sales) {
 }
 
 function renderDonutChart(pending, confirmed, due) {
-  const svg = document.getElementById('donutSvg');
+  const svg = $id('donutSvg');
   if (!svg) return;
   const total = pending + confirmed + due;
   if (total === 0) { svg.innerHTML = `<circle cx="70" cy="70" r="55" fill="none" stroke="#e5e7eb" stroke-width="18"/>`; return; }
@@ -3862,8 +4567,23 @@ function renderDonutChart(pending, confirmed, due) {
 function populateStateDropdowns() {
   const opts = Object.entries(GST_STATE_CODES)
     .map(([code, name]) => `<option value="${code}">${name}</option>`).join('');
-  const custSel = document.getElementById('custState');
+  const custSel = $id('custState');
   if (custSel) custSel.innerHTML = `<option value="">Place of Supply (State)</option>` + opts;
+  // Default the billing state to the shop's own — the overwhelming majority
+  // of counter sales are to a local, same-state customer. Still fully
+  // editable per sale; this just removes a click most invoices don't need.
+  resetCustomerStateToShopDefault();
+}
+
+// Called after populating the dropdown AND after clearing the party form
+// post-checkout, so the default reasserts itself for the next customer
+// rather than staying on whatever the previous customer's state was.
+function resetCustomerStateToShopDefault() {
+  const custSel = $id('custState');
+  const shopState = APP_STATE.tenantProfile.stateCode || '';
+  if (custSel && shopState && GST_STATE_CODES[shopState]) {
+    custSel.value = shopState;
+  }
 }
 
 function onCustomerStateChange() { updateTaxTypeHint(); }
@@ -3873,17 +4593,17 @@ function onCustomerGstinInput(val) {
   // immediately which tax will apply — silent misclassification here is
   // exactly the kind of error that surfaces months later at filing time.
   const code = (val || '').trim().slice(0, 2);
-  const sel = document.getElementById('custState');
+  const sel = $id('custState');
   if (sel && GST_STATE_CODES[code]) sel.value = code;
   updateTaxTypeHint();
 }
 
 function updateTaxTypeHint() {
-  const hint = document.getElementById('taxTypeHint');
+  const hint = $id('taxTypeHint');
   if (!hint) return;
   const interstate = TaxEngine.isInterstate({
-    customerGstin: document.getElementById('custGstin')?.value || '',
-    customerStateCode: document.getElementById('custState')?.value || '',
+    customerGstin: $id('custGstin')?.value || '',
+    customerStateCode: $id('custState')?.value || '',
     shopStateCode: APP_STATE.tenantProfile.stateCode || ''
   });
   hint.innerText = interstate
@@ -3896,9 +4616,9 @@ function updateTaxTypeHint() {
    SETTINGS — GST slabs & printer format
    ========================================================================== */
 function saveGstSlabs() {
-  const raw = document.getElementById('cfgGstSlabs')?.value || '';
+  const raw = $id('cfgGstSlabs')?.value || '';
   const result = GstConfig.setSlabs(raw.split(',').map(s => s.trim()).filter(Boolean));
-  const status = document.getElementById('gstSlabStatus');
+  const status = $id('gstSlabStatus');
   if (result.error) {
     if (status) { status.innerText = result.error; status.style.color = 'var(--danger)'; }
     return;
@@ -3911,7 +4631,7 @@ function saveGstSlabs() {
 }
 
 function onPrinterFormatChange() {
-  const fmt = document.getElementById('cfgPrinterFormat')?.value || 'a4';
+  const fmt = $id('cfgPrinterFormat')?.value || 'a4';
   setDisplay('thermalWidthRow', fmt === 'thermal' ? 'block' : 'none');
   savePrinterSettings();
 }
@@ -3922,14 +4642,14 @@ function onPrinterFormatChange() {
 // setting follows the owner to a second device.
 function savePrinterSettings() {
   const p = APP_STATE.tenantProfile;
-  p.printerFormat = document.getElementById('cfgPrinterFormat')?.value || 'a4';
-  p.thermalWidth = parseInt(document.getElementById('cfgThermalWidth')?.value, 10) || 80;
+  p.printerFormat = $id('cfgPrinterFormat')?.value || 'a4';
+  p.thermalWidth = parseInt($id('cfgThermalWidth')?.value, 10) || 80;
 
-  const cut = document.getElementById('cfgCutType')?.value || 'partial';
+  const cut = $id('cfgCutType')?.value || 'partial';
   p.autoCut = cut !== 'none';
   p.cutType = cut === 'none' ? 'partial' : cut;
 
-  const drawer = document.getElementById('cfgCashDrawer')?.value || 'off';
+  const drawer = $id('cfgCashDrawer')?.value || 'off';
   p.cashDrawer = drawer !== 'off';
   p.drawerPin = drawer === 'pin5' ? '5' : '2';
 
@@ -3960,7 +4680,7 @@ function loadPrinterAndGstSettingsIntoDOM() {
    draws revenue as an area+line with an order-count bar underlay.
    ========================================================================== */
 function renderTrendChart(rangeDays) {
-  const container = document.getElementById('splineChartContainer');
+  const container = $id('splineChartContainer');
   if (!container) return;
 
   const days = rangeDays || APP_STATE.trendRangeDays || 30;
@@ -4087,7 +4807,7 @@ function renderPagerFooter(container, shown, total, onMoreFnName) {
 }
 
 function renderCatalog() {
-  const container = document.getElementById('catalogGrid');
+  const container = $id('catalogGrid');
   if (!container) return;
   container.innerHTML = '';
   const filtered = APP_STATE.inventory.filter(i => APP_STATE.activeSector === 'All' || i.category === APP_STATE.activeSector);
@@ -4141,18 +4861,18 @@ function renderCatalog() {
   renderPagerFooter(container, visible.length, totalMatching, 'loadMoreCatalog');
 }
 
-function openNewProductModal() { document.getElementById('newProdModal')?.classList.add('open'); }
-function closeNewProdModal() { document.getElementById('newProdModal')?.classList.remove('open'); }
+function openNewProductModal() { $id('newProdModal')?.classList.add('open'); }
+function closeNewProdModal() { $id('newProdModal')?.classList.remove('open'); }
 
 function saveNewProduct() {
-  const name = document.getElementById('npName')?.value.trim();
-  const category = document.getElementById('npCategory')?.value || 'Electronics';
-  const barcode = document.getElementById('npBarcode')?.value.trim() || '';
-  const hsn = document.getElementById('npHsn')?.value.trim() || '8517';
-  const gst = parseInt(document.getElementById('npGst')?.value, 10) || 18;
-  const price = parseFloat(document.getElementById('npPrice')?.value) || 0;
-  const stock = parseInt(document.getElementById('npStock')?.value, 10) || 0;
-  const rawIds = document.getElementById('npIdentifiers')?.value || '';
+  const name = $id('npName')?.value.trim();
+  const category = $id('npCategory')?.value || 'Electronics';
+  const barcode = $id('npBarcode')?.value.trim() || '';
+  const hsn = $id('npHsn')?.value.trim() || '8517';
+  const gst = parseInt($id('npGst')?.value, 10) || 18;
+  const price = parseFloat($id('npPrice')?.value) || 0;
+  const stock = parseInt($id('npStock')?.value, 10) || 0;
+  const rawIds = $id('npIdentifiers')?.value || '';
   const idArray = rawIds.split(/[\n,]+/).map(s => s.trim()).filter(Boolean);
 
   if (!name) return alert("Product name is required!");
@@ -4182,13 +4902,13 @@ function saveNewProduct() {
 
 function filterSector(sec, el) {
   APP_STATE.activeSector = sec;
-  document.querySelectorAll('.sector-chip').forEach(c => c.classList.remove('active'));
+  $qa('.sector-chip').forEach(c => c.classList.remove('active'));
   if (el) el.classList.add('active');
   renderCatalog();
 }
 
 function handleSearch(q) {
-  const cards = document.querySelectorAll('.catalog-card');
+  const cards = $qa('.catalog-card');
   cards.forEach(c => { c.style.display = c.innerText.toLowerCase().includes(q.toLowerCase()) ? 'flex' : 'none'; });
 }
 
@@ -4218,8 +4938,8 @@ function exportCurrentReportCSV() {
   // Reads whatever is currently rendered in the drill-down table and
   // exports exactly what the user sees, so the export always matches
   // the on-screen report (including its current filter/customer selection).
-  const theadRow = document.querySelector('#drillTableHead tr');
-  const bodyRows = document.querySelectorAll('#drillTableBody tr');
+  const theadRow = $q('#drillTableHead tr');
+  const bodyRows = $qa('#drillTableBody tr');
   if (!theadRow || !bodyRows.length) {
     alert("No data to export in this report.");
     return;
@@ -4241,7 +4961,7 @@ function printReportDocument() { window.print(); }
 let barcodeBuffer = "";
 let barcodeTimer = null;
 window.addEventListener('keypress', (e) => {
-  const authEl = document.getElementById('authOverlay');
+  const authEl = $id('authOverlay');
   if (authEl && authEl.classList.contains('hidden')) {
     if (e.key === 'Enter') {
       if (barcodeBuffer.length > 2) {
@@ -4276,7 +4996,6 @@ window.onPhoneInput = onPhoneInput;
 window.onRegGstinInput = onRegGstinInput;
 window.pickIndustry = pickIndustry;
 window.setLoginMethod = setLoginMethod;
-window.sendLoginOtp = sendLoginOtp;
 window.verifyOtpCode = verifyOtpCode;
 window.resendOtp = resendOtp;
 window.onOtpInput = onOtpInput;
@@ -4305,6 +5024,52 @@ window.handleLogoUpload = handleLogoUpload;
 window.removeShopLogo = removeShopLogo;
 window.selectAlternative = selectAlternative;
 window.updateSyncIndicator = updateSyncIndicator;
+
+
+function expandMobileSearch(e) {
+  const box = $id('globalSearchBox');
+  if (!box || box.classList.contains('expanded')) return;
+  if (window.innerWidth > 640) return; // desktop is always expanded, nothing to do
+  box.classList.add('expanded');
+  $id('globalSearchInput')?.focus();
+}
+
+window.handleKhataSearch = handleKhataSearch;
+window.setKhataFilter = setKhataFilter;
+window.openVendorEditModal = openVendorEditModal;
+window.closeVendorEditModal = closeVendorEditModal;
+window.saveVendorEdit = saveVendorEdit;
+window.toggleVendorStar = toggleVendorStar;
+window.handleCust360Search = handleCust360Search;
+window.selectCust360Result = selectCust360Result;
+window.toggleCurrentCustomerStar = toggleCurrentCustomerStar;
+window.openCustEditModal = openCustEditModal;
+window.closeCustEditModal = closeCustEditModal;
+window.saveCustEdit = saveCustEdit;
+window.archiveCurrentCustomer = archiveCurrentCustomer;
+window.escJs = escJs;
+window.onPurVendorInput = onPurVendorInput;
+window.expandMobileSearch = expandMobileSearch;
+window.setKhataTab = setKhataTab;
+window.renderKhataView = renderKhataView;
+window.openSettlementModal = openSettlementModal;
+window.closeSettlementModal = closeSettlementModal;
+window.submitSettlement = submitSettlement;
+window.sendWhatsAppReminder = sendWhatsAppReminder;
+window.exportKhataToExcel = exportKhataToExcel;
+window.openEditStockModal = openEditStockModal;
+window.closeEditStockModal = closeEditStockModal;
+window.saveEditedStock = saveEditedStock;
+window.deleteInventoryItemPrompt = deleteInventoryItemPrompt;
+window.renderInventoryTable = renderInventoryTable;
+
+window.openInvoiceActionPopup = openInvoiceActionPopup;
+window.closeInvoiceActionPopup = closeInvoiceActionPopup;
+window.iapDownload = iapDownload;
+window.iapPrint = iapPrint;
+window.iapOpenEdit = iapOpenEdit;
+window.iapSaveEdit = iapSaveEdit;
+window.iapOpenCancel = iapOpenCancel;
 window.openReturnModal = openReturnModal;
 window.closeReturnModal = closeReturnModal;
 window.updateReturnQty = updateReturnQty;
@@ -4372,12 +5137,12 @@ let waitingWorker = null;
 
 function showUpdateBanner(worker) {
   waitingWorker = worker;
-  const banner = document.getElementById('updateBanner');
+  const banner = $id('updateBanner');
   if (banner) banner.classList.remove('hidden');
 }
 
 function dismissUpdateBanner() {
-  const banner = document.getElementById('updateBanner');
+  const banner = $id('updateBanner');
   if (banner) banner.classList.add('hidden');
 }
 

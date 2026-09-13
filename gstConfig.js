@@ -68,7 +68,7 @@ const GstConfig = {
   // a slab change in Settings is reflected everywhere without a reload.
   refreshAllRateSelects() {
     const slabs = this.getSlabs();
-    document.querySelectorAll('select[data-gst-rate-select]').forEach(sel => {
+    $qa('select[data-gst-rate-select]').forEach(sel => {
       const previous = sel.value;
       sel.innerHTML = slabs.map(s => `<option value="${s}">${s}%</option>`).join('');
       if (slabs.map(String).includes(previous)) sel.value = previous;

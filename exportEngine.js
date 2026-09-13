@@ -117,8 +117,8 @@ function exportToExcel(filename, sheetName, headers, rows, meta = {}) {
 // exactly that — so what the user sees on screen and what lands in Excel
 // can never diverge, including any filter they applied.
 function exportCurrentViewToExcel() {
-  const theadRow = document.querySelector('#drillTableHead tr');
-  const bodyRows = document.querySelectorAll('#drillTableBody tr');
+  const theadRow = $q('#drillTableHead tr');
+  const bodyRows = $qa('#drillTableBody tr');
   if (!theadRow || !bodyRows.length) {
     showSaasToast('Nothing to export in this view.', 3000, 'err');
     return;
@@ -138,11 +138,11 @@ function exportCurrentViewToExcel() {
     if (cells.length) rows.push(cells);
   });
 
-  const title = document.getElementById('drillReportTitle')?.innerText || 'Report';
+  const title = $id('drillReportTitle')?.innerText || 'Report';
   exportToExcel(
     `${(APP_STATE.currentReportKey || 'report')}-${new Date().toISOString().slice(0, 10)}`,
     title, headers, rows,
-    { filter: document.getElementById('drillFilterLabel')?.innerText || '' }
+    { filter: $id('drillFilterLabel')?.innerText || '' }
   );
 }
 

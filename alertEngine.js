@@ -45,7 +45,7 @@ function parseBatchExpiry(raw) {
 
 function daysUntil(date) {
   if (!date) return null;
-  return Math.floor((date - new Date()) / 86400000);
+  return Math.floor((date.getTime() - Date.now()) / 86400000);
 }
 
 function getLowStockItems() {
@@ -126,7 +126,7 @@ function findAlternatives(item) {
     })
     .filter(x => x.shared.length > 0)
     // Exact salt matches first, then broadest overlap, then most stock.
-    .sort((a, b) => (b.exact - a.exact) || (b.shared.length - a.shared.length) || (b.alt.stock - a.alt.stock))
+    .sort((a, b) => (Number(b.exact) - Number(a.exact)) || (b.shared.length - a.shared.length) || (b.alt.stock - a.alt.stock))
     .slice(0, 6);
 }
 

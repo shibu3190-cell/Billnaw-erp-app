@@ -75,7 +75,7 @@ const PrinterEngine = {
   },
 
   setStatus(msg, isWarning) {
-    const el = document.getElementById('printerStatusLine');
+    const el = $id('printerStatusLine');
     if (el) {
       el.innerText = msg;
       el.style.color = isWarning ? 'var(--danger)' : 'var(--success)';

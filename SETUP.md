@@ -18,6 +18,7 @@
    - `0006_alerts_logo_composition.sql` — logo, stock/expiry alerts, medicine composition
    - `0007_purchases_vendors.sql` — cloud purchase/vendor history, weighted-average cost
    - `0008_subscription_plans.sql` — subscription plans (currently: everyone on 'free', all features unlocked)
+   - `0009_customer_lifecycle_b2b.sql` — customer archival/star/frequent tagging, vendor divisions, PAN & Drug License fields
 
 ## Running the test suite
 ```bash

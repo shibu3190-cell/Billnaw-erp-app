@@ -202,7 +202,7 @@
         <button class="nav-item" onclick="switchView('pos', this)"><svg class="ic"><use href="#i-cart"/></svg><span>Counter POS</span></button>
         <button class="nav-item" onclick="switchView('khata', this)"><svg class="ic"><use href="#i-users"/></svg><span>Parties / Khata</span></button>
         <button class="nav-item" onclick="switchView('inventory', this)"><svg class="ic"><use href="#i-box"/></svg><span>Stock Master</span></button>
-        <button class="nav-item" onclick="switchView('reports', this)"><svg class="ic"><use href="#i-chart"/></svg><span>GST Reports</span></button>
+        <button class="nav-item" onclick="switchView('reports', this)"><svg class="ic"><use href="#i-chart"/></svg><span>Business 360</span></button>
         <button class="nav-item admin-only" onclick="switchView('settings', this)"><svg class="ic"><use href="#i-gear"/></svg><span>Settings</span></button>
       </nav>
     </aside>
@@ -212,9 +212,11 @@
       
       <!-- TOP NAV -->
       <header class="top-nav">
-        <div class="global-search-box">
+        <div class="global-search-box" id="globalSearchBox" onclick="expandMobileSearch(event)">
           <span class="icon">🔍</span>
-          <input type="text" placeholder="Search Invoices, Customers, Items..." oninput="handleGlobalSearch(this.value)">
+          <input type="text" id="globalSearchInput" placeholder="Search Invoices, Customers, Items..."
+                 oninput="handleGlobalSearch(this.value)"
+                 onblur="if(!this.value) document.getElementById('globalSearchBox').classList.remove('expanded')">
         </div>
 
         <div class="header-btn-group">
@@ -358,6 +360,8 @@
                 <option value="">Place of Supply (State)</option>
               </select>
               <input type="text" id="custGstin" placeholder="Customer GSTIN (B2B)" oninput="onCustomerGstinInput(this.value)">
+              <input type="text" id="custPan" placeholder="Customer PAN (B2B)">
+              <input type="text" id="custDrugLicense" placeholder="Buyer's Drug License No." style="grid-column: span 2; display:none;">
               <p id="taxTypeHint" style="grid-column: span 2; font-size:0.72rem; color:var(--text-muted); margin:0;">Tax type: CGST + SGST (intra-state)</p>
             </div>
 
@@ -396,11 +400,33 @@
 
       <!-- 3. KHATA VIEW -->
       <section id="view-khata" class="view-container">
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
-          <h3>Customer Balance Ledger (Khata)</h3>
-          <button class="btn-pill secondary" onclick="exportData('khata')">Export Khata CSV</button>
+        <div class="section-head" style="display:flex; justify-content:space-between; align-items:flex-end; flex-wrap:wrap; gap:10px;">
+          <div>
+            <h2>Khata — Party Ledger</h2>
+            <p>Track what customers owe you, and what you owe suppliers</p>
+          </div>
+          <button class="btn-pill secondary" onclick="exportKhataToExcel()">Export (Excel)</button>
         </div>
-        <div id="khataGrid" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(260px, 1fr)); gap:12px;"></div>
+
+        <div class="auth-seg" style="max-width:320px; margin-bottom:12px;">
+          <button class="auth-seg-btn active" id="khataTabCustomers" onclick="setKhataTab('customers')">Customers (Receivable)</button>
+          <button class="auth-seg-btn" id="khataTabVendors" onclick="setKhataTab('vendors')">Vendors (Payable)</button>
+        </div>
+
+        <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-bottom:14px;">
+          <input type="text" placeholder="Search by name or phone…" style="flex:1; min-width:180px; padding:10px 14px; border:1px solid var(--border); border-radius:11px;"
+                 oninput="handleKhataSearch(this.value)">
+          <div style="display:flex; gap:6px;">
+            <button class="btn-pill secondary khata-filter-chip active" onclick="setKhataFilter('all', this)">All</button>
+            <button class="btn-pill secondary khata-filter-chip" onclick="setKhataFilter('due', this)">Has Due</button>
+            <button class="btn-pill secondary khata-filter-chip" onclick="setKhataFilter('frequent', this)">Frequent</button>
+            <button class="btn-pill secondary khata-filter-chip" onclick="setKhataFilter('starred', this)">⭐ Starred</button>
+          </div>
+        </div>
+
+        <div class="khata-summary-row" id="khataSummaryRow"></div>
+
+        <div id="khataGrid" class="khata-grid"></div>
       </section>
 
       <!-- 4. INVENTORY VIEW -->
@@ -506,16 +532,24 @@
             </div>
 
             <div id="cust360SelectorWrap" style="display:none;">
-              <div class="form-input">
-                <label>Select Customer Profile to Inspect</label>
-                <select id="cust360Dropdown" onchange="renderCustomer360Profile(this.value)"></select>
+              <div class="form-input" style="position:relative;">
+                <label>Search by Name or Mobile Number</label>
+                <input type="text" id="cust360SearchInput" placeholder="Type a name or phone number…"
+                       autocomplete="off" oninput="handleCust360Search(this.value)"
+                       onfocus="handleCust360Search(this.value)">
+                <div id="cust360SearchResults" class="cc-list" style="display:none; position:absolute; top:100%; left:0; right:0; z-index:50;"></div>
               </div>
-              <button class="btn-pill secondary" style="margin-top:8px;" onclick="exportCustomer360()">Export this party's full purchase history (Excel)</button>
+              <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:8px;">
+                <button class="btn-pill secondary" onclick="exportCustomer360()">Export purchase history (Excel)</button>
+                <button class="btn-pill secondary" id="c360StarBtn" onclick="toggleCurrentCustomerStar()">☆ Star this customer</button>
+                <button class="btn-pill secondary" onclick="openCustEditModal()">Edit Profile</button>
+                <button class="btn-pill danger" onclick="archiveCurrentCustomer()">Archive / Delete</button>
+              </div>
             </div>
 
             <div id="cust360HeaderStats" style="display:none;" class="cust-360-header">
               <div class="cust-stat-kpi"><h5>Customer Name</h5><div class="val" id="c360Name">-</div></div>
-              <div class="cust-stat-kpi"><h5>Mobile &amp; GSTIN</h5><div class="val" id="c360Contact" style="font-size:0.95rem;">-</div></div>
+              <div class="cust-stat-kpi"><h5>Mobile, GSTIN &amp; PAN</h5><div class="val" id="c360Contact" style="font-size:0.95rem;">-</div></div>
               <div class="cust-stat-kpi"><h5>Lifetime Value</h5><div class="val" id="c360Ltv">₹0.00</div></div>
               <div class="cust-stat-kpi"><h5>Outstanding Due</h5><div class="val" id="c360Due" style="color:var(--danger);">₹0.00</div></div>
             </div>
@@ -634,6 +668,19 @@
             <div class="form-input"><label>GSTIN Number</label><input type="text" id="cfgGst" oninput="updateLivePreview()"></div>
             <div class="form-input"><label>Contact Phone Number *</label><input type="tel" id="cfgPhone" oninput="updateLivePreview()"></div>
             <div class="form-input"><label>Store Address *</label><input type="text" id="cfgAddress" oninput="updateLivePreview()"></div>
+
+            <div class="settings-block" id="complianceBlock">
+              <h4>Regulatory Identifiers</h4>
+              <p class="settings-hint">
+                PAN is expected on B2B tax invoices once a sale's value crosses the threshold where
+                the buyer's accountant will ask for it. Drug License is required for a pharmacy
+                selling to other pharmacies, hospitals or clinics.
+              </p>
+              <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+                <div class="form-input" id="cfgDrugLicenseRow"><label>Drug License No.</label><input type="text" id="cfgDrugLicenseNo" oninput="updateLivePreview()"></div>
+                <div class="form-input"><label>PAN Number</label><input type="text" id="cfgPanNumber" placeholder="ABCDE1234F" oninput="updateLivePreview()"></div>
+              </div>
+            </div>
           </div>
           <div class="settings-panel-foot">
             <button class="btn-checkout-act" onclick="saveAllSettings()">Save Changes</button>
@@ -945,13 +992,195 @@
       </button>
 
       <button class="mob-nav-item" onclick="switchView('reports', this)">
-        <svg class="ic"><use href="#i-chart"/></svg><span>Reports</span>
+        <svg class="ic"><use href="#i-chart"/></svg><span>Business 360</span>
       </button>
       <button class="mob-nav-item admin-only" onclick="openSettingsHome()">
         <svg class="ic"><use href="#i-gear"/></svg><span>Settings</span>
       </button>
     </nav>
 
+  </div>
+
+  <!-- VENDOR EDIT / DIVISIONS MODAL -->
+  <div class="modal-backdrop" id="vendorEditModal">
+    <div class="modal-window">
+      <div class="modal-header">
+        <h4>Vendor Details</h4>
+        <button onclick="closeVendorEditModal()" style="background:none; border:none; font-size:1.2rem; cursor:pointer; color:var(--text-muted);">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-input"><label>Company Name</label><input type="text" id="vendEditName"></div>
+        <div class="form-input"><label>Phone</label><input type="text" id="vendEditPhone"></div>
+        <div class="form-input"><label>Address</label><input type="text" id="vendEditAddress"></div>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+          <div class="form-input"><label>GSTIN</label><input type="text" id="vendEditGstin"></div>
+          <div class="form-input"><label>PAN</label><input type="text" id="vendEditPan"></div>
+        </div>
+        <div class="form-input"><label>Drug License No. <span class="lbl-opt">(pharmacy suppliers)</span></label><input type="text" id="vendEditDrugLicense"></div>
+
+        <div class="settings-block" style="margin:10px 0;">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <strong style="font-size:0.85rem;">Divisions</strong>
+            <span style="font-size:0.72rem; color:var(--text-muted);">Payable: <strong id="vendEditPayables">₹0.00</strong></span>
+          </div>
+          <div id="vendDivisionsList" style="margin-top:6px; display:flex; flex-wrap:wrap; gap:6px;"></div>
+          <p class="settings-hint" style="margin-top:6px;">
+            Many distributors bill through separate company divisions (e.g. Cardiac vs Dermatology).
+            Add a division name during Inward Purchase for this vendor and it appears here automatically.
+          </p>
+        </div>
+
+        <div style="display:flex; gap:10px;">
+          <button class="btn-pill secondary" onclick="toggleVendorStar()">⭐ Toggle Star</button>
+          <button class="btn-checkout-act" style="flex:1;" onclick="saveVendorEdit()">Save Vendor</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- CUSTOMER EDIT / B2B PROFILE MODAL -->
+  <div class="modal-backdrop" id="custEditModal">
+    <div class="modal-window">
+      <div class="modal-header">
+        <h4>Edit Customer Profile</h4>
+        <button onclick="closeCustEditModal()" style="background:none; border:none; font-size:1.2rem; cursor:pointer; color:var(--text-muted);">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-input"><label>Name</label><input type="text" id="custEditName"></div>
+        <div class="form-input"><label>Phone</label><input type="text" id="custEditPhone"></div>
+        <div class="form-input"><label>Address</label><input type="text" id="custEditAddress"></div>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+          <div class="form-input"><label>GSTIN <span class="lbl-opt">(B2B)</span></label><input type="text" id="custEditGstin"></div>
+          <div class="form-input"><label>PAN <span class="lbl-opt">(B2B)</span></label><input type="text" id="custEditPan" placeholder="ABCDE1234F"></div>
+        </div>
+        <div class="form-input" id="custEditDlRow">
+          <label>Drug License No. <span class="lbl-opt">(B2B pharmacy buyer — hospital, clinic, another pharmacy)</span></label>
+          <input type="text" id="custEditDrugLicense">
+        </div>
+        <button class="btn-checkout-act" style="width:100%; margin-top:8px;" onclick="saveCustEdit()">Save Profile</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- INVOICE ACTION POPUP -->
+  <div class="modal-backdrop" id="invoiceActionModal">
+    <div class="modal-window">
+      <div class="modal-header">
+        <h4 id="iapInvoiceNo">Invoice</h4>
+        <button onclick="closeInvoiceActionPopup()" style="background:none; border:none; font-size:1.2rem; cursor:pointer; color:var(--text-muted);">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="settings-block" style="margin-bottom:12px;">
+          <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; font-size:0.84rem;">
+            <div><span style="color:var(--text-muted); font-size:0.72rem; display:block;">CUSTOMER</span><strong id="iapCustomer">—</strong></div>
+            <div><span style="color:var(--text-muted); font-size:0.72rem; display:block;">DATE</span><strong id="iapDate">—</strong></div>
+            <div><span style="color:var(--text-muted); font-size:0.72rem; display:block;">MODE</span><strong id="iapTender">—</strong></div>
+            <div><span style="color:var(--text-muted); font-size:0.72rem; display:block;">STATUS</span><span id="iapStatus">—</span></div>
+          </div>
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-top:10px; padding-top:10px; border-top:1px solid var(--border);">
+            <span style="font-size:0.85rem;">Total</span>
+            <strong style="font-size:1.15rem;" id="iapTotal">₹0.00</strong>
+          </div>
+        </div>
+
+        <div class="iap-action-grid">
+          <button class="btn-pill secondary" onclick="iapDownload()"><svg class="ic"><use href="#i-doc"/></svg> Download PDF</button>
+          <button class="btn-pill secondary" onclick="iapPrint()"><svg class="ic"><use href="#i-scan"/></svg> Re-print</button>
+          <button class="btn-pill secondary" onclick="iapOpenEdit()"><svg class="ic"><use href="#i-home"/></svg> Edit Contact Info</button>
+          <button class="btn-pill danger" onclick="iapOpenCancel()" id="iapCancelBtn"><svg class="ic"><use href="#i-truck"/></svg> Cancel / Return</button>
+        </div>
+
+        <!-- Inline edit sub-panel: contact details only, never amounts/items -->
+        <div id="iapEditPanel" style="display:none; margin-top:14px;" class="settings-block">
+          <h4>Edit Contact Details</h4>
+          <p class="settings-hint">
+            Only the customer's contact details on this record can be changed here — the billed
+            amounts, items and tax are fixed once issued. To change what was sold or its tax,
+            use Cancel / Return above, which issues a proper credit note.
+          </p>
+          <div class="form-input"><label>Customer Name</label><input type="text" id="iapEditName"></div>
+          <div class="form-input"><label>Phone</label><input type="text" id="iapEditPhone"></div>
+          <div class="form-input"><label>Address</label><input type="text" id="iapEditAddress"></div>
+          <button class="btn-pill primary" onclick="iapSaveEdit()">Save Contact Details</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- KHATA SETTLEMENT MODAL -->
+  <div class="modal-backdrop" id="settlementModal">
+    <div class="modal-window">
+      <div class="modal-header">
+        <h4 id="settlementModalTitle">Record Payment</h4>
+        <button onclick="closeSettlementModal()" style="background:none; border:none; font-size:1.2rem; cursor:pointer; color:var(--text-muted);">✕</button>
+      </div>
+      <div class="modal-body">
+        <p style="font-size:0.86rem; margin-bottom:12px;">
+          <strong id="settlementPartyName">—</strong><br>
+          <span style="color:var(--text-muted); font-size:0.8rem;">Current balance: <strong id="settlementCurrentDue">₹0.00</strong></span>
+        </p>
+        <div class="form-input">
+          <label id="settlementAmountLabel">Amount Received</label>
+          <input type="number" min="0" step="0.01" id="settlementAmount">
+        </div>
+        <div class="form-input">
+          <label>Mode</label>
+          <select id="settlementMode">
+            <option value="Cash">Cash</option>
+            <option value="UPI">UPI</option>
+            <option value="Bank Transfer">Bank Transfer</option>
+            <option value="Cheque">Cheque</option>
+          </select>
+        </div>
+        <button class="btn-checkout-act" style="width:100%; margin-top:10px;" onclick="submitSettlement()">Record Settlement</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- EDIT STOCK ITEM MODAL -->
+  <div class="modal-backdrop" id="editStockModal">
+    <div class="modal-window large">
+      <div class="modal-header">
+        <h4>Edit Product</h4>
+        <button onclick="closeEditStockModal()" style="background:none; border:none; font-size:1.2rem; cursor:pointer; color:var(--text-muted);">✕</button>
+      </div>
+      <div class="modal-body">
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+          <div class="form-input"><label>Product Name *</label><input type="text" id="editItemName"></div>
+          <div class="form-input">
+            <label>Category</label>
+            <select id="editItemCategory">
+              <option value="Electronics">Electronics</option>
+              <option value="Pharmacy">Pharmacy</option>
+              <option value="Jewelry">Jewelry</option>
+              <option value="Grocery">Grocery</option>
+            </select>
+          </div>
+          <div class="form-input"><label>Barcode / SKU</label><input type="text" id="editItemBarcode"></div>
+          <div class="form-input"><label>HSN / SAC Code</label><input type="text" id="editItemHsn"></div>
+          <div class="form-input">
+            <label>GST Rate</label>
+            <select id="editItemGst" data-gst-rate-select></select>
+          </div>
+          <div class="form-input"><label>Selling Price (₹) *</label><input type="number" min="0" step="0.01" id="editItemPrice"></div>
+          <div class="form-input" id="editItemCostRow"><label>Cost Price (₹)</label><input type="number" min="0" step="0.01" id="editItemCost"></div>
+          <div class="form-input"><label>Current Stock *</label><input type="number" min="0" id="editItemStock"></div>
+          <div class="form-input"><label>Low-Stock Alert Level <span class="lbl-opt">(optional)</span></label><input type="number" min="0" id="editItemLowStockLevel" placeholder="Uses shop default if blank"></div>
+        </div>
+        <div class="form-input" id="editItemCompositionRow">
+          <label>Composition / Molecule <span class="lbl-opt">(Pharmacy — powers alternative suggestions)</span></label>
+          <input type="text" id="editItemComposition" placeholder="e.g. Paracetamol 650mg">
+        </div>
+        <p style="font-size:0.72rem; color:var(--text-muted); margin-top:6px;">
+          Editing stock quantity here is a manual correction (stock-take, damage, etc.) — it does not
+          create a purchase or sales record. For new stock arriving from a supplier, use Inward Purchase instead.
+        </p>
+        <div style="display:flex; gap:10px; margin-top:16px;">
+          <button class="btn-pill danger admin-only" onclick="deleteInventoryItemPrompt()">Delete Product</button>
+          <button class="btn-checkout-act" style="flex:1;" onclick="saveEditedStock()">Save Changes</button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- SALES RETURN / CREDIT NOTE MODAL -->
@@ -1024,7 +1253,7 @@
     <div class="modal-window">
       <div class="modal-header">
         <h4>📷 Live Barcode / QR Scanner</h4>
-        <button class="modal-close-btn" onclick="closeCameraScanner()" aria-label="Close">✕</button>
+        <button onclick="closeCameraScanner()" style="background:none; border:none; color:#fff; font-size:1.2rem; cursor:pointer;">✕</button>
       </div>
       <div class="modal-body" style="text-align:center;">
         <div class="scanner-viewport-box">
@@ -1061,7 +1290,7 @@
     <div class="modal-window large">
       <div class="modal-header">
         <h4>Inward Stock &amp; Purchase Entry</h4>
-        <button class="modal-close-btn" onclick="closeInwardModal()" aria-label="Close">✕</button>
+        <button onclick="closeInwardModal()" style="background:none; border:none; color:#fff; font-size:1.2rem; cursor:pointer;">✕</button>
       </div>
       <div class="modal-body">
         <div class="auth-tab-bar">
@@ -1083,7 +1312,12 @@
             <p id="restockNotice" style="display:none; font-size:0.76rem; color:var(--brand-ink); background:var(--brand-soft); padding:9px 11px; border-radius:9px; margin-top:7px;"></p>
           </div>
           <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
-            <div class="form-input"><label>Supplier Name</label><input type="text" id="purVendor" placeholder="Vendor Name"></div>
+            <div class="form-input"><label>Supplier Name</label><input type="text" id="purVendor" placeholder="Vendor Name" oninput="onPurVendorInput(this.value)"></div>
+            <div class="form-input">
+              <label>Division <span class="lbl-opt">(optional — e.g. Cardiac, Dermatology)</span></label>
+              <input type="text" id="purDivision" placeholder="Leave blank if this supplier has none" list="purDivisionOptions">
+              <datalist id="purDivisionOptions"></datalist>
+            </div>
             <div class="form-input"><label>Purchase Bill No</label><input type="text" id="purBillNo" placeholder="INV-9921"></div>
             <div class="form-input"><label>Item Name *</label><input type="text" id="purName" placeholder="e.g. Motorola G84"></div>
             <div class="form-input"><label>Category</label>
@@ -1169,7 +1403,7 @@
     <div class="modal-window">
       <div class="modal-header">
         <h4 id="attrModalTitle">Item Details</h4>
-        <button class="modal-close-btn" onclick="closeModal()" aria-label="Close">✕</button>
+        <button onclick="closeModal()" style="background:none; border:none; color:#fff; font-size:1.2rem; cursor:pointer;">✕</button>
       </div>
       <div class="modal-body" id="attrModalBody"></div>
       <div style="padding:12px 18px; background:#f8fafc; text-align:right;">
@@ -1183,7 +1417,7 @@
     <div class="modal-window">
       <div class="modal-header">
         <h4>Add Product to Master</h4>
-        <button class="modal-close-btn" onclick="closeNewProdModal()" aria-label="Close">✕</button>
+        <button onclick="closeNewProdModal()" style="background:none; border:none; color:#fff; font-size:1.2rem; cursor:pointer;">✕</button>
       </div>
       <div class="modal-body">
         <div class="form-input"><label>Product Name *</label><input type="text" id="npName"></div>
@@ -1220,6 +1454,8 @@
           <h2 id="pStoreName">Om Betar Bhawan</h2>
           <p id="pStoreAddr">Store Address</p>
           <p>GSTIN: <strong id="pGstin">19ABCDE1234F1Z5</strong> &bull; Ph: <span id="pStorePhone">+91 9876543210</span></p>
+          <p id="pPanRow" style="display:none;">PAN: <strong id="pPanNumber">—</strong></p>
+          <p id="pDrugLicenseRow" style="display:none;">Drug License No: <strong id="pDrugLicenseNo">—</strong></p>
           <hr style="margin:4px 0; border:0; border-top:1px dashed #999;">
           <p><strong>Billed To:</strong> <span id="pCustName">Cash Customer</span> (<span id="pCustPhone">-</span>)</p>
           <p id="pCustAddrRow"><strong>Address:</strong> <span id="pCustAddr">-</span></p>
@@ -1273,6 +1509,7 @@
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="vendor/qrcode.js"></script>
   <script src="vendor/qrcode_UTF8.js"></script>
+  <script src="dom.js"></script>
   <script src="gstConfig.js"></script>
   <script src="exportEngine.js"></script>
   <script src="alertEngine.js"></script>

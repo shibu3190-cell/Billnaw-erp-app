@@ -1032,16 +1032,6 @@ select.auth-field { appearance: none; }
 }
 .alert-panel-head strong { font-size: 0.9rem; }
 .alert-panel-head button { background: none; border: none; cursor: pointer; color: var(--text-muted); font-size: 0.95rem; }
-.modal-close-btn {
-  background: rgba(255,255,255,0.92);
-  border: 1px solid var(--border);
-  color: var(--text-dark);
-  width: 30px; height: 30px; border-radius: 8px;
-  font-size: 1.1rem; line-height: 1; cursor: pointer;
-  display: grid; place-items: center;
-  padding: 0;
-}
-.modal-close-btn:hover { background: #fff; }
 .alert-panel-body { overflow-y: auto; flex: 1; }
 .alert-group { padding: 10px 0 4px; }
 .alert-group h5 {
@@ -1136,3 +1126,64 @@ select.auth-field { appearance: none; }
   animation: aiSpin 0.8s linear infinite;
 }
 @keyframes aiSpin { to { transform: rotate(360deg); } }
+
+/* ==========================================================================
+   KHATA — party ledger cards
+   ========================================================================== */
+.khata-summary-row { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 16px; }
+.khata-stat {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md);
+  padding: 12px 18px; min-width: 160px;
+}
+.khata-stat-label { font-size: 0.72rem; color: var(--text-muted); font-weight: 700; display: block; margin-bottom: 3px; }
+.khata-stat-value { font-size: 1.3rem; font-weight: 800; color: var(--text-dark); }
+.khata-stat-value.ok { color: var(--mint-ink); }
+.khata-stat-value.danger { color: var(--danger); }
+
+.khata-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); gap: 12px; }
+.khata-card {
+  background: var(--surface); border: 1px solid var(--border); border-left: 4px solid var(--border-strong);
+  border-radius: var(--radius-md); padding: 14px; box-shadow: var(--shadow-xs);
+  display: flex; flex-direction: column; gap: 10px;
+}
+.khata-card.receivable { border-left-color: var(--warning); }
+.khata-card.payable    { border-left-color: var(--danger); }
+.khata-card.settled    { border-left-color: var(--mint-solid); opacity: 0.82; }
+.khata-card-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+.khata-card-phone { font-size: 0.78rem; color: var(--text-muted); margin-top: 2px; }
+.khata-balance { font-size: 1.0rem; font-weight: 800; white-space: nowrap; }
+.khata-balance.receivable { color: #B7791F; }
+.khata-balance.payable    { color: var(--danger); }
+.khata-balance.zero       { color: var(--mint-ink); font-size: 0.85rem; }
+.khata-card-actions { display: flex; gap: 7px; }
+.khata-card-actions .btn-pill.ghost { flex: 0 0 auto; padding: 8px 12px; }
+
+/* ==========================================================================
+   MOBILE HEADER — condensed top bar
+   The desktop top-nav (search + sync chip + alert bell + avatar) was
+   cramming all four into a ~360px viewport. On mobile: the search box
+   collapses to an icon that expands on tap, the sync chip hides its text
+   label (dot only), and the network badge (already redundant with the sync
+   chip) is dropped entirely rather than shown twice.
+   ========================================================================== */
+@media (max-width: 640px) {
+  .top-nav { padding: 0 10px; gap: 6px; }
+  .global-search-box { max-width: 34px; overflow: hidden; transition: max-width .2s; flex: 0 0 auto; }
+  .global-search-box.expanded { max-width: 200px; flex: 1 1 auto; }
+  .global-search-box input { width: 100%; }
+  .header-btn-group { gap: 6px; }
+  .sync-chip { padding: 6px 9px; }
+  .sync-chip span:not(.sync-dot) { display: none; }
+  .net-badge { display: none !important; }
+  .alert-panel { right: -8px; width: min(320px, 94vw); }
+}
+
+/* Clickable invoice rows */
+.clickable-row { cursor: pointer; }
+.clickable-row:hover { background: var(--brand-softer); }
+
+.iap-action-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.iap-action-grid .btn-pill { display: flex; align-items: center; justify-content: center; gap: 6px; }
+
+.khata-filter-chip { padding: 7px 13px; font-size: 0.78rem; }
+.khata-filter-chip.active { background: var(--brand); color: #fff; border-color: var(--brand); }

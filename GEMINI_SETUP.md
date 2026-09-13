@@ -21,7 +21,7 @@ supabase secrets list
 ```
 
 ## 3. Deploy the function
-```bash
+```bashru
 supabase functions deploy ai-invoice-parse
 ```
 

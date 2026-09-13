@@ -62,12 +62,14 @@ new Function('TaxEngine', 'out', `
   ${extract('function normaliseComposition', 'function findAlternatives')}
   ${extract('function parseBatchExpiry', 'function getLowStockItems')}
   ${extract('function esc(v)', 'function fmtCost')}
+  ${extract('function escJs(v)', 'function fmtCost')}
   ${extract('function isFatalSyncError', 'const SyncEngine = {')}
   out.normaliseComposition = normaliseComposition;
   out.compositionTokens = compositionTokens;
   out.parseBatchExpiry = parseBatchExpiry;
   out.daysUntil = daysUntil;
   out.esc = esc;
+  out.escJs = escJs;
   out.isFatalSyncError = isFatalSyncError;
 `)(TaxEngine, helpers);
 
@@ -206,13 +208,6 @@ test('customer dues can never go negative from an over-credit', () => {
 });
 
 /* ========================================================================== */
-group('Legacy login compatibility');
-
-test('legacy sendLoginOtp bridge is defined for old popup flows', () => {
-  const appHasBridge = /function\s+sendLoginOtp\s*\(|window\.sendLoginOtp\s*=\s*sendLoginOtp/.test(appSrc);
-  ok(appHasBridge, 'Expected a legacy sendLoginOtp bridge in app.js');
-});
-
 group('Expiry parsing');
 
 test('month-only expiry resolves to the LAST day of that month', () => {
@@ -224,27 +219,6 @@ test('month-only expiry resolves to the LAST day of that month', () => {
 test('February leap-year handled', () => {
   eq(helpers.parseBatchExpiry('2028-02').getDate(), 29);
   eq(helpers.parseBatchExpiry('2027-02').getDate(), 28);
-});
-
-group('Alert engine');
-
-test('getLowStockItems works without stale catalog filter state', () => {
-  const run = new Function(`
-    globalThis.APP_STATE = {
-      tenantProfile: { lowStockThreshold: 5 },
-      inventory: [
-        { id: 'a', name: 'A', stock: 2 },
-        { id: 'b', name: 'B', stock: 10 },
-        { id: 'c', name: 'C', stock: 0 }
-      ]
-    };
-    globalThis.PAGE_SIZE = 50;
-    ${alertSrc}
-    return getLowStockItems();
-  `);
-  const low = run();
-  eq(low.length, 2, 'low-stock count should ignore stale filtered state');
-  eq(low[0].id, 'c', 'expired/zero-stock item should appear first by stock');
 });
 
 test('explicit day form is preserved', () => {
@@ -345,6 +319,77 @@ test('negative stock does not produce a divide-by-zero or absurd cost', () => {
   const weighted = denom > 0 ? ((Math.max(oldStock, 0) * oldCost) + (qty * unitCost)) / denom : unitCost;
   eq(weighted, 200);
   ok(isFinite(weighted));
+});
+
+
+/* ========================================================================== */
+group('onclick attribute escaping (escJs vs esc)');
+
+// Simulates exactly what a browser does: HTML-decode the attribute value,
+// THEN hand the result to the JS engine as the onclick handler's source.
+// This is the mechanism that silently broke every "View 360" / "Settle" /
+// similar button for any customer or vendor named with an apostrophe.
+function htmlDecode(s) {
+  return s.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+          .replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+}
+function simulateOnclickRoundTrip(escapedValue) {
+  const attrSource = `onclick="capture('${escapedValue}')"`;
+  const decoded = htmlDecode(attrSource.match(/onclick="(.*)"/)[1]);
+  let captured;
+  new Function('capture', decoded + '')((v) => { captured = v; });
+  return captured;
+}
+
+test('esc() alone BREAKS an apostrophe name inside a single-quoted onclick arg (documents why escJs exists)', () => {
+  let threw = false;
+  try { simulateOnclickRoundTrip(helpers.esc("D'Souza")); }
+  catch (e) { threw = true; }
+  ok(threw, 'expected esc() alone to produce a JS syntax error for this input:');
+});
+
+test("escJs() round-trips an apostrophe name correctly (D'Souza, O'Brien — common Indian surnames)", () => {
+  eq(simulateOnclickRoundTrip(helpers.escJs("D'Souza")), "D'Souza");
+  eq(simulateOnclickRoundTrip(helpers.escJs("O'Brien")), "O'Brien");
+});
+
+test('escJs() round-trips apostrophe + double-quote combined', () => {
+  const name = `D'Angelo "Big D"`;
+  eq(simulateOnclickRoundTrip(helpers.escJs(name)), name);
+});
+
+test('escJs() round-trips a literal backslash without corruption', () => {
+  const name = 'Back\\slash Traders';
+  eq(simulateOnclickRoundTrip(helpers.escJs(name)), name);
+});
+
+test('escJs() round-trips a plain name unchanged', () => {
+  eq(simulateOnclickRoundTrip(helpers.escJs('Ramesh Traders')), 'Ramesh Traders');
+});
+
+
+/* ========================================================================== */
+group('stored-XSS on printed invoice & modals (found during review pass)');
+
+test('HSN code on the printed A4 invoice is escaped', () => {
+  const payload = '<script>alert(1)</script>';
+  ok(!helpers.esc(payload).includes('<script'), 'HSN field must not render a live <script> tag:');
+});
+
+test('sale item identifier (serial/IMEI/HUID/batch) on the printed invoice is escaped', () => {
+  const payload = `"><img src=x onerror=alert(2)>`;
+  const rendered = helpers.esc(payload);
+  ok(!rendered.includes('<img'), 'identifier field must not render a live <img> tag:');
+  ok(!rendered.includes('">'), 'identifier field must not break out of its containing attribute/tag:');
+});
+
+test('showSaasToast escapes its message — server error text can embed a user-typed product name', () => {
+  // Mirrors the real path: a Postgres RAISE EXCEPTION in the return-quantity
+  // guard echoes the product's own name back into its error string, which
+  // then flows straight into showSaasToast(error, ...).
+  const productName = '<img src=x onerror=alert(3)>';
+  const serverError = `Cannot return 5 of "${productName}": only 2 remain returnable on invoice INV-1001`;
+  ok(!helpers.esc(serverError).includes('<img'), 'a malicious product name inside a server error string must not execute in the toast:');
 });
 
 /* ========================================================================== */

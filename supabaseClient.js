@@ -179,6 +179,64 @@ const SB = {
     return { data: data || [], error: error?.message };
   },
 
+  /* ---------------- CUSTOMERS (tagged) ---------------- */
+
+  async fetchCustomersTagged(shopId) {
+    const { data, error } = await _sb.rpc('fetch_customers_with_tags', { p_shop_id: shopId });
+    return { data: data || [], error: error?.message };
+  },
+
+  async setCustomerStar(customerId, starred) {
+    const { error } = await _sb.from('customers').update({ is_starred: starred }).eq('id', customerId);
+    return { error: error?.message };
+  },
+
+  async archiveCustomer(customerId, archived) {
+    const { error } = await _sb.from('customers').update({ archived }).eq('id', customerId);
+    return { error: error?.message };
+  },
+
+  // Server refuses this unless the customer has zero sales history — the
+  // check is enforced in the function, not just trusted client-side.
+  async deleteCustomerIfUnused(shopId, customerId) {
+    const { error } = await _sb.rpc('delete_customer_if_unused', {
+      p_shop_id: shopId, p_customer_id: customerId
+    });
+    return { error: error?.message };
+  },
+
+  async updateCustomerDetails(customerId, patch) {
+    const { error } = await _sb.from('customers').update(patch).eq('id', customerId);
+    return { error: error?.message };
+  },
+
+  /* ---------------- VENDOR DIVISIONS ---------------- */
+
+  async fetchVendorDivisions(shopId, vendorId) {
+    let query = _sb.from('vendor_divisions').select('*').eq('shop_id', shopId);
+    if (vendorId) query = query.eq('vendor_id', vendorId);
+    const { data, error } = await query.order('name');
+    return { data: data || [], error: error?.message };
+  },
+
+  async createVendorDivision(shopId, vendorId, name) {
+    const { data, error } = await _sb
+      .from('vendor_divisions')
+      .upsert({ shop_id: shopId, vendor_id: vendorId, name }, { onConflict: 'vendor_id,name' })
+      .select().maybeSingle();
+    return { data, error: error?.message };
+  },
+
+  async setVendorStar(vendorId, starred) {
+    const { error } = await _sb.from('vendors').update({ is_starred: starred }).eq('id', vendorId);
+    return { error: error?.message };
+  },
+
+  async updateVendorDetails(vendorId, patch) {
+    const { error } = await _sb.from('vendors').update(patch).eq('id', vendorId);
+    return { error: error?.message };
+  },
+
   /* ---------------- SALES ---------------- */
 
   // Single atomic call: inserts the invoice, decrements every line's stock,
@@ -235,6 +293,7 @@ const SB = {
         idempotency_key: purchase.idempotency_key,
         vendor: purchase.vendor || {},
         bill_no: purchase.billNo || '',
+        division_name: purchase.divisionName || '',
         bill_date: purchase.billDate || '',
         taxable: purchase.taxable || 0,
         gst_total: purchase.gstTotal || 0,
@@ -313,7 +372,8 @@ const SB = {
   async parseInvoiceImage(file) {
     const base64 = await new Promise((resolve, reject) => {
       const reader = new FileReader();
-      reader.onload = () => resolve(reader.result.split(',')[1]);
+      // readAsDataURL always resolves reader.result to a string.
+      reader.onload = () => resolve(/** @type {string} */ (reader.result).split(',')[1]);
       reader.onerror = reject;
       reader.readAsDataURL(file);
     });
