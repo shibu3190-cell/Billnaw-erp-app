@@ -28,6 +28,7 @@
     "khata.js",
     "invoice.js",
     "scanner.js",
+    "misc.js",
     "supabaseClient.js",
     "app.js",
     "src/**/*.ts"
