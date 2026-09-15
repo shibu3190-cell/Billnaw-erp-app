@@ -391,6 +391,19 @@ test('sale item identifier (serial/IMEI/HUID/batch) on the printed invoice is es
   ok(!rendered.includes('">'), 'identifier field must not break out of its containing attribute/tag:');
 });
 
+test('POS cart line escapes the assigned identifier (serial/IMEI/HUID/batch) — F2 audit finding, 2026-09-15', () => {
+  // renderCart() rendered it.assignedIdentifier raw while every other render
+  // path for the same field (return modal, printed invoice, audit trail)
+  // already called esc() on it — a cashier typing a serial containing HTML
+  // during normal checkout executed it in their own browser the moment the
+  // cart re-rendered. Source-extracted so this guards the actual call site,
+  // not just esc()'s general behavior (which the other tests above already
+  // cover) — a regression here means someone removed the esc() call again,
+  // not that esc() itself broke.
+  const fnSrc = extract('function renderCart()', 'function removeCart');
+  ok(fnSrc.includes('esc(it.assignedIdentifier)'), 'renderCart must call esc(it.assignedIdentifier), not interpolate it raw:');
+});
+
 test('showSaasToast escapes its message — server error text can embed a user-typed product name', () => {
   // Mirrors the real path: a Postgres RAISE EXCEPTION in the return-quantity
   // guard echoes the product's own name back into its error string, which

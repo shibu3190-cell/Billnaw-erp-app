@@ -1467,7 +1467,7 @@ function renderCart() {
 
     tbody.innerHTML += `
       <tr>
-        <td><strong>${esc(it.name)}</strong><br><small style="color:var(--text-muted);">${it.assignedIdentifier ? 'ID: ' + it.assignedIdentifier : 'Untracked'} • ${it.gst}% GST</small></td>
+        <td><strong>${esc(it.name)}</strong><br><small style="color:var(--text-muted);">${it.assignedIdentifier ? 'ID: ' + esc(it.assignedIdentifier) : 'Untracked'} • ${it.gst}% GST</small></td>
         <td>${it.qty}</td>
         <td>₹${it.price.toFixed(2)}</td>
         <td><strong>₹${it.totalAmount.toFixed(2)}</strong></td>

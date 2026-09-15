@@ -17,7 +17,7 @@ Basis: `docs/AUDIT_REPORT.md` findings, read-only follow-up. No code changed to 
 
 ## 1. Executive Summary
 
-The database/RLS layer is sound: every tenant table is scoped and enforced server-side, role-based financial redaction happens in Postgres functions rather than the client, and the atomic invoice/purchase/return RPCs are genuinely idempotent. The weak points are all in the frontend/edge-function layer, not the data layer: inconsistent XSS escaping discipline across 99 `innerHTML` sites (unchanged by the Phase 2–4 structural work) and no rate limiting on a paid third-party API call. The one previously-open MEDIUM finding involving live infrastructure (the duplicate edge function) is now resolved. None of the remaining findings require weakening RLS, touching production data, or changing financial logic to fix.
+The database/RLS layer is sound: every tenant table is scoped and enforced server-side, role-based financial redaction happens in Postgres functions rather than the client, and the atomic invoice/purchase/return RPCs are genuinely idempotent. The XSS coverage gap (F2) has been fully audited and its one real finding fixed — see below. No rate limiting on a paid third-party API call remains open (F3). The one previously-open MEDIUM finding involving live infrastructure (the duplicate edge function) is resolved. §5 records a live incident, found and fixed the same day, involving dashboard-drifted RLS policies on `shops` — not a code-review finding, but a live one, discovered by actually running RUNBOOK TEST 12 rather than reviewing it statically. None of the remaining findings require weakening RLS, touching production data, or changing financial logic to fix.
 
 ## 2. Findings by Severity
 
@@ -25,10 +25,10 @@ The database/RLS layer is sound: every tenant table is scoped and enforced serve
 
 **~~F1 — Duplicate stale edge function~~ — RESOLVED** (see §0). No action required; carried here for audit-trail continuity only.
 
-**F2 — XSS coverage gap** *(open)*
-- 99 `innerHTML`/`outerHTML` sites across `app.js`, `customers.js`, `settings.js`, `purchases.js`; 2 escaping helpers (`esc`, `escJs`), applied manually and inconsistently. Only 3 spots have regression test coverage (`tests/run-tests.js`), all from a prior hardening pass (`sw.js` cache name literally documents this as `v23.0-invoice-xss-hardening`).
-- **Impact if exploited**: stored XSS via any un-escaped interpolation path — e.g., a product/vendor name from AI-parsed invoice OCR, a customer name, or a server error string — rendered into an owner's or cashier's browser session. RLS still bounds it to that shop, limiting blast radius to single-tenant.
-- **Fix (staged, non-destructive)**: audit-only pass first — grep every `innerHTML =`/`.insertAdjacentHTML` call site across all 4 files now, classify as (a) static/trusted HTML, (b) already escaped, (c) needs escaping. Patch category (c) incrementally with test coverage added per site, following the exact pattern the 3 existing regression tests already establish.
+**F2 — XSS coverage gap** *(audited and fixed, 2026-09-15 — see `docs/XSS_AUDIT.md`)*
+- Full audit performed per the fix plan below: all 85 actual interpolation sites (not 99 — that count included non-assignment mentions) across `app.js`, `customers.js`, `settings.js`, `purchases.js` individually traced and classified. Result: 84 were already correctly escaped or provably safe (numeric/UUID/DB-constrained fields, machine-generated text, or escaped downstream of assembly). **One real, live, exploitable gap found and fixed**: `renderCart()` rendered a cashier-typed serial/IMEI/HUID/batch field (`assignedIdentifier`) unescaped on the POS cart — the single most-used screen in the app — while every other render path for the same field (return modal, printed invoice, audit trail) was already correctly escaped. Fixed by wrapping in `esc()`, matching the existing pattern; regression test added to `tests/run-tests.js` (source-extracts `renderCart()` and asserts the `esc()` call is present, so removing it again fails the suite). 41/41 tests passing.
+- One residual low-priority item, not fixed: `customers.js`'s credit-note-number list is unescaped but server-sequenced (not free text) — see `docs/XSS_AUDIT.md` for detail.
+- **Not resolved forever**: this was a manual audit, not a lint rule — nothing stops a *new* unescaped `innerHTML` site from being added later. No ESLint is currently configured in this project; adding one with a rule against raw template-literal interpolation into `.innerHTML` would close that process gap, flagged as a future recommendation, not urgent.
 
 ### LOW
 
@@ -88,7 +88,7 @@ Postgres OR's multiple permissive policies of the same command together, so the 
 2. ~~Run RUNBOOK TEST 12 live~~ — **Done.** Found and fixed a real leak (§5) — not a clean pass, but the item is closed.
 3. ~~Remove the two now-redundant `shops` INSERT policies~~ — **Done**, same day (`0012_drop_redundant_shops_insert_policies.sql`). Confirmed via `grep -rn "from('shops').insert"` that no code path used raw inserts anymore, dropped both live, and re-ran `test-signup-rpc.mjs` afterward to confirm signup still works via `create_shop_and_owner` (which runs `SECURITY DEFINER` and never depended on these policies).
 4. ~~Audit every other tenant table's live policy list against its migration file~~ — **Done, same day.** All 8 remaining tenant tables (`items`, `customers`, `sales`, `sales_returns`, `vendors`, `purchases`, `vendor_divisions`, `ai_purchase_staging`) checked live via `pg_policies` and confirmed to match their migration files exactly — no drift found. The `shops` leak was isolated, not systemic; see §5 follow-up.
-5. Begin F2 (XSS audit-and-patch) as a standalone effort across all 4 files that now contain interpolation sites (`app.js`, `customers.js`, `settings.js`, `purchases.js`) — independent of the React/TS migration.
+5. ~~Begin F2 (XSS audit-and-patch)~~ — **Done**, same day. See `docs/XSS_AUDIT.md`: one real finding (POS cart), fixed and test-covered.
 6. Add a parity test for `settings.js`/`customers.js`/`purchases.js` (see `docs/AUDIT_REPORT.md` §9 gap) before any further `app.js` extraction.
 7. F3 and F4 — low-risk additive changes, can be scheduled alongside further build tooling work.
 8. F5 — hold until financial-logic-change process (before/after tests, Safety Gate) is set up; do not rush a financial RPC change ahead of that scaffolding.
