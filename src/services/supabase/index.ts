@@ -39,6 +39,16 @@ export function createSB(supabaseClient: any, supabaseUrl: string) {
 
     /* ---------------- AUTH ---------------- */
 
+    // Shop + profile creation is one atomic, SECURITY DEFINER RPC
+    // (create_shop_and_owner, migration 0011) rather than two separate
+    // client-side inserts. Two reasons, not one: (a) a two-step insert left
+    // an orphaned ownerless shop if the second insert ever failed after the
+    // first succeeded; (b) Postgres requires an INSERT ... RETURNING row to
+    // satisfy the table's SELECT policy, and a brand-new user has no
+    // profile yet at the moment the shop row is created, so the old
+    // `.from('shops').insert(...).select().single()` call cannot succeed
+    // once shops' RLS is correctly scoped (see docs/SECURITY_REPORT.md's
+    // record of the 0010 fix and the regression it exposed here).
     async signUpShop({ email, password, shopName, phone, address, gstin, industry }: any) {
       const { data: authData, error: authErr } = await _sb.auth.signUp({ email, password });
       if (authErr) return { error: authErr.message };
@@ -47,17 +57,11 @@ export function createSB(supabaseClient: any, supabaseUrl: string) {
 
       const stateCode = gstin && gstin.length >= 2 ? gstin.slice(0, 2) : null;
 
-      const { data: shop, error: shopErr } = await _sb
-        .from('shops')
-        .insert({ name: shopName, phone, address, gstin, state_code: stateCode, industry, is_locked: industry !== 'All' })
-        .select()
-        .single();
+      const { data: shop, error: shopErr } = await _sb.rpc('create_shop_and_owner', {
+        p_shop: { name: shopName, phone, address, gstin, state_code: stateCode, industry },
+        p_owner_name: shopName,
+      });
       if (shopErr) return { error: shopErr.message };
-
-      const { error: profileErr } = await _sb
-        .from('profiles')
-        .insert({ id: userId, shop_id: shop.id, role: 'owner', full_name: shopName });
-      if (profileErr) return { error: profileErr.message };
 
       return { shop };
     },
@@ -133,20 +137,14 @@ export function createSB(supabaseClient: any, supabaseUrl: string) {
 
       const resolvedState = stateCode || (gstin && gstin.length >= 2 ? gstin.slice(0, 2) : null);
 
-      const { data: shop, error: shopErr } = await _sb
-        .from('shops')
-        .insert({
+      const { data: shop, error: shopErr } = await _sb.rpc('create_shop_and_owner', {
+        p_shop: {
           name: shopName, owner_name: ownerName, phone, email: email || null,
-          address, gstin: gstin || null, state_code: resolvedState,
-          industry, is_locked: industry !== 'All'
-        })
-        .select().single();
+          address, gstin: gstin || null, state_code: resolvedState, industry,
+        },
+        p_owner_name: ownerName || shopName,
+      });
       if (shopErr) return { error: shopErr.message };
-
-      const { error: profileErr } = await _sb
-        .from('profiles')
-        .insert({ id: session.user.id, shop_id: shop.id, role: 'owner', full_name: ownerName || shopName });
-      if (profileErr) return { error: profileErr.message };
 
       return { shop };
     },

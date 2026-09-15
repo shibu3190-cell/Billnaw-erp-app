@@ -9,7 +9,7 @@ This plan sequences work; it does not itself change any code. Each step below re
 ## 0. Preconditions Before Any Code Change — status
 
 - [x] AUDIT_REPORT.md, SECURITY_REPORT.md, ARCHITECTURE_TARGET.md reviewed and approved by the user (this session).
-- [ ] RUNBOOK.md TEST 12 (tenant isolation) re-run live to confirm static RLS review matches runtime behavior. **Still open — highest-priority unresolved precondition, carried forward from Phase 1 with no progress across two audit passes.**
+- [x] RUNBOOK.md TEST 12 (tenant isolation) re-run live. **Done, 2026-09-15 — found and fixed a real cross-tenant leak in the process (see `docs/SECURITY_REPORT.md` §5).** Not a clean pass, but the finding is fixed and re-verified live: `supabase/migrations/0010_fix_shops_rls_leak.sql` (removed two dashboard-drifted policies on `shops`, one of them `using (true)`) and `0011_atomic_shop_signup.sql` (fixed the signup regression the leak-fix exposed, via a new atomic `create_shop_and_owner` RPC). §6 recommends running the same live-vs-migration policy diff on every other tenant table, since this incident proved drift is real, not just plausible.
 - [ ] RUNBOOK.md's stale claims corrected — now three items instead of two (PIN limitation, non-atomic invoice/stock claim, and the Phase-1-era file listing that predates `settings.js`/`customers.js`/`purchases.js`/`src/`/`docs/`). Documentation-only, low risk, still not done.
 - [x] Resolve F1 (stale duplicate edge function) — **done**, verified in `docs/SECURITY_REPORT.md` §0.
 - [ ] Create a `stable`/`phase-4-complete` tag at current HEAD as a rollback point before further Phase 4 or Phase 5 work begins. **Not yet done** — recommend doing this immediately, since Phase 4 work (settings/customers/purchases extraction) has already landed without one.
@@ -95,13 +95,23 @@ Any deviation in this checklist is a **stop condition** requiring explicit appro
 
 ---
 
+## Status as of 2026-09-15 (post-incident)
+
+Since this plan was last written, the following happened, in order, all with explicit go-ahead at each step:
+
+1. ~~Tag current HEAD as a rollback point~~ — attempted; the push was rejected by this session's git credentials (tag refs out of scope). The commit history itself remains a valid rollback point; a tag can be added manually if wanted.
+2. ~~Add parity tests for `settings.js`/`customers.js`/`purchases.js`~~ — **Done** (`tests/extraction-parity.js`, 35/35 passing, diffs every function against its pre-extraction `app.js` body via git history).
+3. ~~Begin Phase 5 (Supabase service layer extraction)~~ — **Done.** `src/services/supabase/index.ts` (typed `createSB` factory, all ~35 methods, `tests/supabase-parity.js`, 45/45) and `src/core/permissions/index.ts` (typed `applyRoleSecurity` port, `tests/permissions-parity.js`, 8/8, run against the actual legacy function via a stubbed DOM, not just a text diff).
+4. ~~Run RUNBOOK TEST 12 live~~ — **Done, and it was not a clean pass.** Found a real, live cross-tenant leak on `shops` (two dashboard-drifted RLS policies, one `using (true)`), fixed it (`0010_fix_shops_rls_leak.sql`), which then exposed a real signup regression (Postgres requires `INSERT ... RETURNING` rows to satisfy SELECT policy, and a brand-new user has no profile yet), fixed with an atomic `SECURITY DEFINER` RPC (`0011_atomic_shop_signup.sql`) that also closed a pre-existing orphaned-shop-on-partial-failure bug. Full incident record in `docs/SECURITY_REPORT.md` §5. Both `supabaseClient.js` and its typed mirror were updated in lockstep and re-verified against `tests/supabase-parity.js`.
+
+**This is the first genuinely live-verified checkpoint in this plan** — everything before it was static code review, however careful. The finding changes the risk picture: dashboard drift from the migrations-as-written is now a confirmed, not hypothetical, risk class for this project.
+
 ## Final Decision
 
-**SAFE TO CONTINUE.** Phase 2–4 (partial) work is verified sound, consistent with its own plan, and has not touched financial logic, RLS, or deployed behavior. Recommended next actions, in order, once you approve:
+**SAFE TO CONTINUE**, with one new mandatory precondition before treating any other table's RLS as trustworthy: **`docs/SECURITY_REPORT.md` §6 recommends running the same live-policy-vs-migration-file diff on every other tenant table** (`items`, `customers`, `sales`, `sales_returns`, `vendors`, `purchases`, `vendor_divisions`, `ai_purchase_staging`), not just `shops`. `shops` was only checked because TEST 12 happens to exercise it — nothing ruled out the same class of drift existing elsewhere. Recommended next actions, in order:
 
-1. Tag current HEAD as a rollback point (no-code-change, near-zero risk).
-2. Run RUNBOOK TEST 12 live against a real Supabase instance — the single longest-outstanding open item across two audit passes.
-3. Add parity tests for `settings.js`/`customers.js`/`purchases.js` to close the Phase 4 coverage gap.
-4. Begin Phase 5 (Supabase service layer extraction) as the next structural step, ahead of finishing the remainder of Phase 4's `app.js` breakup, per the sequencing rationale in §1.
+1. Live-diff the remaining 8 tenant tables' actual Dashboard policies against their migration files — cheap, no code change, directly informed by exactly how this incident was found.
+2. Remove the two now-redundant `shops` INSERT policies once `create_shop_and_owner` is confirmed the only signup path in use.
+3. Continue Phase 4 (`app.js` inventory/returns/reports/auth/POS extraction) or Phase 6 (local database) per your priority — both remain unstarted and are independent of the incident above.
 
 No further code changes are made by this plan document itself; execution of any numbered step above is a separate, explicit next step requiring your go-ahead.

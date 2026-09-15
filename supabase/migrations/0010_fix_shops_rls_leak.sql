@@ -1,0 +1,55 @@
+-- ==========================================================================
+-- FIX: cross-tenant data leak on `shops` via dashboard-added RLS policies
+-- ==========================================================================
+-- Discovered live 2026-09-15 by running RUNBOOK.md TEST 12 (tenant
+-- isolation) against the project's Supabase instance: a brand-new
+-- authenticated user, with NO profile row at all, could SELECT rows from
+-- `shops` belonging to other tenants — including phone, address, gstin,
+-- bank_name, bank_acc, bank_ifsc, and upi_id, i.e. every shop's banking
+-- details.
+--
+-- Root cause: two policies existed on `shops` in the live database that
+-- are NOT defined in this migrations directory (dashboard drift from
+-- 0001_init.sql):
+--
+--   "Allow authenticated selects"  (SELECT, to authenticated)
+--     using (true)
+--   -- unconditionally true. Postgres OR's multiple permissive policies
+--   -- together, so this alone made every other SELECT policy on the
+--   -- table moot — any signed-in user could read every shop row,
+--   -- regardless of shop_id or status.
+--
+--   "shops_select_authenticated"   (SELECT, to public)
+--     using ((auth.uid() is not null) and
+--            (my_role() = 'super_admin' or id = my_shop_id()))
+--   -- correctly scoped to the caller's own shop, BUT missing the
+--   -- `status = 'active'` check that the migrated shops_select policy
+--   -- has. Independent of the `true` policy above, this alone would
+--   -- have let a revoked shop's own owner keep seeing their shop —
+--   -- bypassing the revocation lockout tested in RUNBOOK TEST 12 step
+--   -- 4/5 (Supabase -> shops -> set status = 'revoked' -> expect
+--   -- lockout).
+--
+-- The correctly-written policy, shops_select (0001_init.sql), was
+-- present the whole time and does check status = 'active'. It was just
+-- outvoted by the two permissive policies above (RLS policies of the
+-- same command are OR'd, not AND'd, so a table is only as strict as its
+-- loosest permissive policy).
+--
+-- Fix: drop the two undocumented policies. This leaves shops_select as
+-- the only SELECT policy on `shops`, restoring the tenant + status
+-- scoping exactly as designed in 0001_init.sql. Nothing else changes —
+-- no table, column, or other policy is touched.
+--
+-- Also seen live but NOT touched by this migration (deliberately, not
+-- an oversight): "Allow authenticated inserts" (with check (true)) and
+-- "shops_insert_authenticated" both allow any authenticated user to
+-- INSERT a new shop row. That is permissive by design — a brand-new
+-- user has no shop yet, so an INSERT policy can't scope by my_shop_id().
+-- It is not a data-leak (INSERT can't expose existing rows) and is not
+-- addressed here; it's noted so a future migration doesn't rediscover
+-- it as if it were a leak.
+-- ==========================================================================
+
+drop policy if exists "Allow authenticated selects" on shops;
+drop policy if exists "shops_select_authenticated" on shops;
