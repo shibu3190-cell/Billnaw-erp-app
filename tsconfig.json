@@ -26,6 +26,7 @@
     "pos.js",
     "checkout.js",
     "khata.js",
+    "invoice.js",
     "supabaseClient.js",
     "app.js",
     "src/**/*.ts"
