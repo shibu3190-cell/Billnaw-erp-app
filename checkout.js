@@ -172,5 +172,49 @@ async function checkoutBill() {
   setStep(1);
 }
 
+// Fires after the sale is already printed/complete locally — never blocks
+// the counter on network. On any failure this falls back to the offline
+// queue, retried by flushSyncQueue() next time the app is online.
+//
+// SB.saveSale() calls create_invoice_atomic, which does ALL THREE of:
+// insert invoice, decrement every line's stock, upsert the customer ledger —
+// inside one Postgres transaction. Nothing else belongs here.
+//
+// This function previously ALSO looped SB.decrementStock() and called
+// SB.upsertCustomer() after saveSale. Two real bugs resulted:
+//   1. Every online sale decremented stock TWICE (once in the RPC, once in
+//      the loop), so inventory drained at double the real rate.
+//   2. The upsert passed `dues: existing.dues` — the pre-sale balance — which
+//      overwrote the value the RPC had just correctly incremented, silently
+//      erasing the debt from every Khata (credit) sale.
+async function syncInvoiceToCloud(invoice) {
+  if (!APP_STATE.cloudSession) { SyncEngine.enqueue(invoice); return; }
+  const shopId = APP_STATE.tenantProfile.shopId;
+
+  try {
+    const { data, error } = await SB.saveSale(shopId, invoice);
+
+    // A duplicate idempotency_key means this exact sale is already committed
+    // (a retry landed twice). That's success, not failure — re-queuing it
+    // would loop forever.
+    if (isFatalSyncError(error)) throw new Error(error);
+
+    // Keep the server-assigned row id so returns can be raised against this
+    // invoice without a round-trip to look it up.
+    if (data && data.sale_id) {
+      invoice.cloudId = data.sale_id;
+      const local = APP_STATE.sales.find(s => s.idempotency_key === invoice.idempotency_key);
+      if (local) local.cloudId = data.sale_id;
+      persistState();
+    }
+    updateSyncIndicator();
+  } catch (err) {
+    console.warn('Cloud sync failed, queued for retry:', err.message);
+    SyncEngine.enqueue(invoice);
+    updateSyncIndicator();
+  }
+}
+
 window.reserveInvoiceNumber = reserveInvoiceNumber;
 window.checkoutBill = checkoutBill;
+window.syncInvoiceToCloud = syncInvoiceToCloud;
