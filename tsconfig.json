@@ -18,6 +18,7 @@
     "alertEngine.js",
     "printerEngine.js",
     "settings.js",
+    "customers.js",
     "supabaseClient.js",
     "app.js",
     "src/**/*.ts"
