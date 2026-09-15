@@ -152,3 +152,13 @@ export async function getMeta<T = any>(db: IDBDatabase, key: string): Promise<T 
 export function setMeta<T = any>(db: IDBDatabase, key: string, value: T): Promise<IDBValidKey> {
   return put(db, 'meta', { key, value });
 }
+
+// Clear a store then repopulate it in one call — used by persistState()
+// to sync a whole in-memory array (APP_STATE.inventory etc.) to its
+// store, replacing what localStorage's JSON.stringify-the-whole-array
+// write used to do, but per-store rather than one giant blob, and off
+// the main thread (IndexedDB transactions are async).
+export async function replaceAll<T = any>(db: IDBDatabase, store: StoreName, records: T[]): Promise<void> {
+  await clearStore(db, store);
+  if (records && records.length) await putAll(db, store, records);
+}

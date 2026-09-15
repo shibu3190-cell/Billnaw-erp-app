@@ -15,6 +15,9 @@ declare global {
     // dom.js
     $id: (id: string) => any;
 
+    // database.js
+    LocalDB: any;
+
     // gstConfig.js
     GST_STATE_CODES: any;
     GstConfig: any;

@@ -13,6 +13,7 @@
   "include": [
     "global.d.ts",
     "dom.js",
+    "database.js",
     "gstConfig.js",
     "exportEngine.js",
     "alertEngine.js",

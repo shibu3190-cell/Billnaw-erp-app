@@ -157,29 +157,94 @@ const setTxt = (id, val) => { const el = $id(id); if (el) el.innerText = (val !=
 const setVal = (id, val) => { const el = $id(id); if (el) el.value = (val !== undefined && val !== null) ? val : ''; };
 const setDisplay = (id, s) => { const el = $id(id); if (el) el.style.display = s; };
 
+// Phase 6 cutover (docs/PHASE6_CUTOVER_PLAN.md): storage moved from
+// localStorage to IndexedDB (database.js / LocalDB). Two things this
+// section preserves on purpose, unchanged from before the cutover:
+//   1. APP_STATE stays the single synchronous, in-memory source of truth
+//      every other part of this file already assumes — nothing about
+//      reading APP_STATE.* changed. IndexedDB is a durability layer
+//      underneath it, not a replacement for it.
+//   2. persistState() keeps its exact call signature (still called
+//      synchronously, fire-and-forget, from ~25 places across this file
+//      and customers.js/settings.js/purchases.js) — only its internals
+//      changed. No call site needed to change.
+// What's different: no more ~5-10MB browser cap, and no more rewriting
+// the ENTIRE dataset as one JSON string on every single state change —
+// each collection is now its own IndexedDB store, written independently.
 function persistState() {
-  try {
-    localStorage.setItem('bn_tenant', JSON.stringify(APP_STATE.tenantProfile));
-    localStorage.setItem('bn_inv', JSON.stringify(APP_STATE.inventory));
-    localStorage.setItem('bn_cust', JSON.stringify(APP_STATE.customers));
-    localStorage.setItem('bn_sales', JSON.stringify(APP_STATE.sales));
-    localStorage.setItem('bn_seq', APP_STATE.invCounter.toString());
-    localStorage.setItem('bn_returns', JSON.stringify(APP_STATE.returns || []));
-    localStorage.setItem('bn_purchases', JSON.stringify(APP_STATE.purchases || []));
-  } catch (e) {}
+  if (!APP_STATE._db) return; // boot hasn't opened the database yet
+  const db = APP_STATE._db;
+  LocalDB.setMeta(db, 'tenantProfile', APP_STATE.tenantProfile).catch(() => {});
+  LocalDB.replaceAll(db, 'inventory', APP_STATE.inventory).catch(() => {});
+  LocalDB.replaceAll(db, 'customers', APP_STATE.customers).catch(() => {});
+  LocalDB.replaceAll(db, 'sales', APP_STATE.sales).catch(() => {});
+  LocalDB.setMeta(db, 'invCounter', APP_STATE.invCounter).catch(() => {});
+  LocalDB.replaceAll(db, 'returns', APP_STATE.returns || []).catch(() => {});
+  LocalDB.replaceAll(db, 'purchases', APP_STATE.purchases || []).catch(() => {});
 }
 
-try {
-  const tp = localStorage.getItem('bn_tenant'); if (tp) APP_STATE.tenantProfile = { ...APP_STATE.tenantProfile, ...JSON.parse(tp) };
-  const inv = localStorage.getItem('bn_inv'); if (inv) APP_STATE.inventory = JSON.parse(inv);
-  const cst = localStorage.getItem('bn_cust'); if (cst) APP_STATE.customers = JSON.parse(cst);
-  const sls = localStorage.getItem('bn_sales'); if (sls) APP_STATE.sales = JSON.parse(sls);
-  const seq = localStorage.getItem('bn_seq'); if (seq) APP_STATE.invCounter = parseInt(seq, 10);
-  const cnq = localStorage.getItem('bn_cn_seq'); if (cnq) APP_STATE.cnCounter = parseInt(cnq, 10);
-  const rts = localStorage.getItem('bn_returns'); if (rts) APP_STATE.returns = JSON.parse(rts);
-  const pch = localStorage.getItem('bn_purchases'); if (pch) APP_STATE.purchases = JSON.parse(pch);
-  APP_STATE.lastSyncedAt = localStorage.getItem('bn_last_synced') || null;
-} catch (e) {}
+// Single-key meta writes (invoice/credit-note counters, last-synced
+// timestamp) that used to be individual localStorage.setItem calls
+// scattered at their own call sites — kept as individual call sites
+// rather than folded into persistState(), so behavior at each of those
+// sites is unchanged, just retargeted to IndexedDB.
+function persistMeta(key, value) {
+  if (!APP_STATE._db) return;
+  LocalDB.setMeta(APP_STATE._db, key, value).catch(() => {});
+}
+
+// Replaces the old top-level `try { ...localStorage.getItem... } catch {}`
+// block, which ran synchronously at script-parse time — localStorage
+// allowed that; IndexedDB has no synchronous API, so this is now called
+// (and awaited) from bootApp(), before anything that reads APP_STATE runs.
+async function loadStateFromIndexedDB() {
+  const db = await LocalDB.openBillnawDB();
+  APP_STATE._db = db;
+
+  try {
+    const tp = await LocalDB.getMeta(db, 'tenantProfile');
+    if (tp) APP_STATE.tenantProfile = { ...APP_STATE.tenantProfile, ...tp };
+    const inv = await LocalDB.getAll(db, 'inventory'); if (inv.length) APP_STATE.inventory = inv;
+    const cst = await LocalDB.getAll(db, 'customers'); if (cst.length) APP_STATE.customers = cst;
+    const sls = await LocalDB.getAll(db, 'sales'); if (sls.length) APP_STATE.sales = sls;
+    const seq = await LocalDB.getMeta(db, 'invCounter'); if (seq != null) APP_STATE.invCounter = seq;
+    const cnq = await LocalDB.getMeta(db, 'cnCounter'); if (cnq != null) APP_STATE.cnCounter = cnq;
+    const rts = await LocalDB.getAll(db, 'returns'); if (rts.length) APP_STATE.returns = rts;
+    const pch = await LocalDB.getAll(db, 'purchases'); if (pch.length) APP_STATE.purchases = pch;
+    APP_STATE.lastSyncedAt = (await LocalDB.getMeta(db, 'lastSyncedAt')) || null;
+
+    SyncEngine._cache = await LocalDB.getAll(db, 'syncQueue');
+  } catch (e) {
+    console.warn('IndexedDB load failed, continuing with defaults:', e.message);
+  }
+}
+
+// Every APP_STATE default that used to be bare top-level script code,
+// relocated here (see each removal site for the "moved to
+// initAppStateDefaults()" comment left in its place). These must run
+// AFTER loadStateFromIndexedDB() resolves, not before — several of them
+// (`|| []` patterns) only matter if the load found nothing, same as
+// before the cutover; running them first would stomp real loaded data.
+function initAppStateDefaults() {
+  APP_STATE.cloudSession = APP_STATE.cloudSession ?? null;
+  APP_STATE.cloudProfile = APP_STATE.cloudProfile ?? null;
+  APP_STATE.vendors = APP_STATE.vendors || [];
+  APP_STATE.khataTab = 'customers';
+  APP_STATE.khataSearch = '';
+  APP_STATE.khataFilter = 'all';
+  APP_STATE.returns = APP_STATE.returns || [];
+  APP_STATE.returnDraft = null;
+  resetCatalogPaging();
+}
+
+// Replaces the old implicit "script finishes parsing = state is ready"
+// contract. Awaited from the DOMContentLoaded handler below, before any
+// UI code that reads APP_STATE runs — see docs/PHASE6_CUTOVER_PLAN.md §3
+// for why this ordering is load-bearing, not a formality.
+async function bootApp() {
+  await loadStateFromIndexedDB();
+  initAppStateDefaults();
+}
 
 /* ==========================================================================
    NETWORK EVENT LISTENERS & STATUS
@@ -461,7 +526,13 @@ function reportRpcSkipWarnings(data) {
 }
 
 const SyncEngine = {
-  queueKey: 'bn_offline_sync_queue',
+  // In-memory mirror of the 'syncQueue' IndexedDB store — populated once
+  // at boot by loadStateFromIndexedDB(), kept in sync on every write. Same
+  // "synchronous in-memory truth, async durability underneath" split as
+  // APP_STATE/persistState() above: _read()/_write() stay synchronous so
+  // enqueue()/pendingCount()/pendingBreakdown() (called synchronously from
+  // UI code, e.g. the queue-count badge) don't need to change shape.
+  _cache: [],
 
   generateIdempotencyKey() {
     // Fixed "10000000-1000-4000-8000-100000000000" template — previously
@@ -475,11 +546,11 @@ const SyncEngine = {
     });
   },
 
-  _read() {
-    try { return JSON.parse(localStorage.getItem(this.queueKey) || '[]'); }
-    catch (e) { return []; }
+  _read() { return this._cache; },
+  _write(q) {
+    this._cache = q;
+    if (APP_STATE._db) LocalDB.replaceAll(APP_STATE._db, 'syncQueue', q).catch(() => {});
   },
-  _write(q) { localStorage.setItem(this.queueKey, JSON.stringify(q)); },
 
   // Unified queue. Previously only sales were queued — an offline return or
   // purchase was written to local state and then simply never reached the
@@ -551,7 +622,7 @@ const SyncEngine = {
     updateSyncIndicator();
     if (!remaining.length) {
       APP_STATE.lastSyncedAt = new Date().toISOString();
-      localStorage.setItem('bn_last_synced', APP_STATE.lastSyncedAt);
+      persistMeta('lastSyncedAt', APP_STATE.lastSyncedAt);
       updateLastSyncedLabel();
     }
   }
@@ -621,7 +692,7 @@ async function refreshFromCloud() {
     await SyncEngine.flushSyncQueue();      // push local changes up first
     await hydrateCloudData(APP_STATE.tenantProfile.shopId);  // then pull down
     APP_STATE.lastSyncedAt = new Date().toISOString();
-    localStorage.setItem('bn_last_synced', APP_STATE.lastSyncedAt);
+    persistMeta('lastSyncedAt', APP_STATE.lastSyncedAt);
     persistState();
     renderDashboard();
     renderCatalog();
@@ -645,8 +716,12 @@ async function refreshFromCloud() {
    readable and editable by anyone with devtools, so it protected nothing
    while creating the impression that it did.
    ========================================================================== */
-APP_STATE.cloudSession = null;
-APP_STATE.cloudProfile = null;
+// cloudSession/cloudProfile defaults moved to initAppStateDefaults()
+// (near persistState(), called from bootApp() after the IndexedDB load
+// resolves) — this used to be top-level script code that ran before the
+// (then-synchronous) storage load, now it would run BEFORE an async load
+// resolves and silently wipe a value the load just set. See that
+// function for every relocated default and why each one is here.
 
 const AuthFlow = {
   channel: 'phone',        // 'phone' | 'email'
@@ -1157,9 +1232,11 @@ async function hydrateCloudData(shopId) {
 
     if (maxSeen + 1 > APP_STATE.invCounter) {
       APP_STATE.invCounter = maxSeen + 1;
-      localStorage.setItem('bn_seq', APP_STATE.invCounter.toString());
-    localStorage.setItem('bn_returns', JSON.stringify(APP_STATE.returns || []));
-    localStorage.setItem('bn_purchases', JSON.stringify(APP_STATE.purchases || []));
+      persistMeta('invCounter', APP_STATE.invCounter);
+      if (APP_STATE._db) {
+        LocalDB.replaceAll(APP_STATE._db, 'returns', APP_STATE.returns || []).catch(() => {});
+        LocalDB.replaceAll(APP_STATE._db, 'purchases', APP_STATE.purchases || []).catch(() => {});
+      }
     }
   }
 }
@@ -1800,10 +1877,8 @@ function saveAlertSettings() {
    other's balance. Vendors already existed in Supabase (migration 0007)
    but were never fetched into APP_STATE — invisible data until this.
    ========================================================================== */
-APP_STATE.vendors = APP_STATE.vendors || [];
-APP_STATE.khataTab = 'customers';
-APP_STATE.khataSearch = '';
-APP_STATE.khataFilter = 'all';
+// defaults moved to initAppStateDefaults() — see the comment near
+// persistState() for why.
 
 function setKhataTab(tab) {
   APP_STATE.khataTab = tab;
@@ -2224,8 +2299,8 @@ function iapOpenCancel() {
    the rate stamped on each line at the time of sale — never at today's
    rate, which would produce a credit that doesn't match what was charged.
    ========================================================================== */
-APP_STATE.returns = APP_STATE.returns || [];
-APP_STATE.returnDraft = null;
+// defaults moved to initAppStateDefaults() — see the comment near
+// persistState() for why.
 
 function openReturnModal(invoiceNo) {
   const sale = APP_STATE.sales.find(s => s.invoiceNo === invoiceNo);
@@ -2395,7 +2470,7 @@ async function submitReturn() {
   // how a sale behaves; the cloud call self-queues on failure.
   applyReturnLocally(ret, restock);
   APP_STATE.cnCounter = (APP_STATE.cnCounter || 1) + 1;
-  localStorage.setItem('bn_cn_seq', String(APP_STATE.cnCounter));
+  persistMeta('cnCounter', APP_STATE.cnCounter);
   persistState();
 
   // Same offline-first contract as a sale: never block the counter on
@@ -3932,7 +4007,9 @@ function setTrendRange(days, el) {
    a virtual-list library.
    ========================================================================== */
 const PAGE_SIZE = 60;
-APP_STATE.catalogPage = 1;
+// initial APP_STATE.catalogPage = 1 moved to initAppStateDefaults()
+// (it calls resetCatalogPaging(), defined next) — see the comment near
+// persistState() for why.
 
 function resetCatalogPaging() { APP_STATE.catalogPage = 1; }
 
@@ -4348,7 +4425,14 @@ window.showUpdateBanner = showUpdateBanner;
 window.dismissUpdateBanner = dismissUpdateBanner;
 window.applyAppUpdate = applyAppUpdate;
 
-window.addEventListener('DOMContentLoaded', () => {
+window.addEventListener('DOMContentLoaded', async () => {
+  // Everything below reads APP_STATE — must not run until bootApp()'s
+  // IndexedDB load has actually resolved. This await is the entire point
+  // of the Phase 6 cutover's boot-sequence change (docs/PHASE6_CUTOVER_PLAN.md
+  // §3): the old localStorage-based load was synchronous, so this ordering
+  // was implicit; IndexedDB has no synchronous API, so it's explicit now.
+  await bootApp();
+
   populateStateDropdowns();
   loadPrinterAndGstSettingsIntoDOM();
   applyShopLogo();
