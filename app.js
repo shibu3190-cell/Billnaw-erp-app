@@ -445,6 +445,21 @@ function isFatalSyncError(error, errorCode) {
   return !/duplicate key/i.test(String(error));
 }
 
+// F5 fix (docs/SECURITY_REPORT.md, supabase/migrations/0014): the atomic
+// invoice/purchase/return RPCs skip a malformed line (bad item id, missing
+// item, non-positive quantity) rather than failing the whole transaction —
+// correct for offline resilience, but the money for that line was already
+// charged/credited while its stock movement silently didn't happen. The
+// RPCs now report which lines were skipped via `warnings`; this is the one
+// place that turns that into something the shop owner actually sees,
+// called after every successful (non-replayed) invoice/purchase/return.
+function reportRpcSkipWarnings(data) {
+  if (!data || !Array.isArray(data.warnings) || !data.warnings.length) return;
+  console.warn('RPC reported skipped line(s):', data.warnings);
+  const extra = data.warnings.length > 1 ? ` (+${data.warnings.length - 1} more)` : '';
+  showSaasToast(`⚠️ ${data.warnings.length} line(s) need attention: ${data.warnings[0]}${extra}`, 7000, 'err');
+}
+
 const SyncEngine = {
   queueKey: 'bn_offline_sync_queue',
 
@@ -503,10 +518,10 @@ const SyncEngine = {
       const kind = entry.kind || 'sale';
       const payload = entry.payload || entry;
 
-      let error = null, errorCode = null;
+      let error = null, errorCode = null, data = null;
       try {
         if (kind === 'sale') {
-          ({ error, errorCode } = await SB.saveSale(shopId, payload));
+          ({ data, error, errorCode } = await SB.saveSale(shopId, payload));
         } else if (kind === 'return') {
           if (!payload.cloudSaleId) {
             // The parent invoice hasn't synced yet, so there's no row to
@@ -515,9 +530,9 @@ const SyncEngine = {
             remaining.push(entry);
             continue;
           }
-          ({ error, errorCode } = await SB.processReturn(shopId, payload.cloudSaleId, payload));
+          ({ data, error, errorCode } = await SB.processReturn(shopId, payload.cloudSaleId, payload));
         } else if (kind === 'purchase') {
-          ({ error, errorCode } = await SB.savePurchase(shopId, payload));
+          ({ data, error, errorCode } = await SB.savePurchase(shopId, payload));
         }
       } catch (e) {
         error = e.message;
@@ -527,6 +542,8 @@ const SyncEngine = {
       if (isFatalSyncError(error, errorCode)) {
         remaining.push(entry);
         console.warn(`Sync retry pending (${kind}):`, error);
+      } else {
+        reportRpcSkipWarnings(data);
       }
     }
 
@@ -1583,6 +1600,7 @@ async function syncInvoiceToCloud(invoice) {
       if (local) local.cloudId = data.sale_id;
       persistState();
     }
+    reportRpcSkipWarnings(data);
     updateSyncIndicator();
   } catch (err) {
     console.warn('Cloud sync failed, queued for retry:', err.message);
@@ -2385,12 +2403,13 @@ async function submitReturn() {
   ret.cloudSaleId = d.sale.cloudId || null;
 
   if (APP_STATE.cloudSession && navigator.onLine && ret.cloudSaleId) {
-    const { error, errorCode } = await SB.processReturn(APP_STATE.tenantProfile.shopId, ret.cloudSaleId, ret);
+    const { data, error, errorCode } = await SB.processReturn(APP_STATE.tenantProfile.shopId, ret.cloudSaleId, ret);
     if (isFatalSyncError(error, errorCode)) {
       SyncEngine.enqueue(ret, 'return');
       showSaasToast(`Credit note ${esc(creditNoteNo)} saved locally — will sync when possible.`, 4500);
     } else {
       showSaasToast(`Credit note ${esc(creditNoteNo)} created. Stock ${restock ? 'restored' : 'not restored (damaged)'}.`, 4000);
+      reportRpcSkipWarnings(data);
     }
   } else {
     // No session, offline, or the parent invoice hasn't synced yet — queue it.
