@@ -21,6 +21,7 @@
     "customers.js",
     "purchases.js",
     "inventory.js",
+    "reports.js",
     "supabaseClient.js",
     "app.js",
     "src/**/*.ts"
