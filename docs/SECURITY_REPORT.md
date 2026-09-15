@@ -86,7 +86,7 @@ Postgres OR's multiple permissive policies of the same command together, so the 
 
 1. ~~Confirm and resolve F1~~ — **Done.**
 2. ~~Run RUNBOOK TEST 12 live~~ — **Done.** Found and fixed a real leak (§5) — not a clean pass, but the item is closed.
-3. **New, from §5**: remove the two now-redundant `shops` INSERT policies (`Allow authenticated inserts`, `shops_insert_authenticated`) now that `create_shop_and_owner` is the intended single signup path — low-risk hardening, not urgent, but tracked so it isn't forgotten.
+3. ~~Remove the two now-redundant `shops` INSERT policies~~ — **Done**, same day (`0012_drop_redundant_shops_insert_policies.sql`). Confirmed via `grep -rn "from('shops').insert"` that no code path used raw inserts anymore, dropped both live, and re-ran `test-signup-rpc.mjs` afterward to confirm signup still works via `create_shop_and_owner` (which runs `SECURITY DEFINER` and never depended on these policies).
 4. ~~Audit every other tenant table's live policy list against its migration file~~ — **Done, same day.** All 8 remaining tenant tables (`items`, `customers`, `sales`, `sales_returns`, `vendors`, `purchases`, `vendor_divisions`, `ai_purchase_staging`) checked live via `pg_policies` and confirmed to match their migration files exactly — no drift found. The `shops` leak was isolated, not systemic; see §5 follow-up.
 5. Begin F2 (XSS audit-and-patch) as a standalone effort across all 4 files that now contain interpolation sites (`app.js`, `customers.js`, `settings.js`, `purchases.js`) — independent of the React/TS migration.
 6. Add a parity test for `settings.js`/`customers.js`/`purchases.js` (see `docs/AUDIT_REPORT.md` §9 gap) before any further `app.js` extraction.
