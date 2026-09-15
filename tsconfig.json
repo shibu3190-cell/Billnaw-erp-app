@@ -25,6 +25,7 @@
     "auth.js",
     "pos.js",
     "checkout.js",
+    "khata.js",
     "supabaseClient.js",
     "app.js",
     "src/**/*.ts"
