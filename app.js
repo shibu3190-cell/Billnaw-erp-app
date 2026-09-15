@@ -157,29 +157,94 @@ const setTxt = (id, val) => { const el = $id(id); if (el) el.innerText = (val !=
 const setVal = (id, val) => { const el = $id(id); if (el) el.value = (val !== undefined && val !== null) ? val : ''; };
 const setDisplay = (id, s) => { const el = $id(id); if (el) el.style.display = s; };
 
+// Phase 6 cutover (docs/PHASE6_CUTOVER_PLAN.md): storage moved from
+// localStorage to IndexedDB (database.js / LocalDB). Two things this
+// section preserves on purpose, unchanged from before the cutover:
+//   1. APP_STATE stays the single synchronous, in-memory source of truth
+//      every other part of this file already assumes — nothing about
+//      reading APP_STATE.* changed. IndexedDB is a durability layer
+//      underneath it, not a replacement for it.
+//   2. persistState() keeps its exact call signature (still called
+//      synchronously, fire-and-forget, from ~25 places across this file
+//      and customers.js/settings.js/purchases.js) — only its internals
+//      changed. No call site needed to change.
+// What's different: no more ~5-10MB browser cap, and no more rewriting
+// the ENTIRE dataset as one JSON string on every single state change —
+// each collection is now its own IndexedDB store, written independently.
 function persistState() {
-  try {
-    localStorage.setItem('bn_tenant', JSON.stringify(APP_STATE.tenantProfile));
-    localStorage.setItem('bn_inv', JSON.stringify(APP_STATE.inventory));
-    localStorage.setItem('bn_cust', JSON.stringify(APP_STATE.customers));
-    localStorage.setItem('bn_sales', JSON.stringify(APP_STATE.sales));
-    localStorage.setItem('bn_seq', APP_STATE.invCounter.toString());
-    localStorage.setItem('bn_returns', JSON.stringify(APP_STATE.returns || []));
-    localStorage.setItem('bn_purchases', JSON.stringify(APP_STATE.purchases || []));
-  } catch (e) {}
+  if (!APP_STATE._db) return; // boot hasn't opened the database yet
+  const db = APP_STATE._db;
+  LocalDB.setMeta(db, 'tenantProfile', APP_STATE.tenantProfile).catch(() => {});
+  LocalDB.replaceAll(db, 'inventory', APP_STATE.inventory).catch(() => {});
+  LocalDB.replaceAll(db, 'customers', APP_STATE.customers).catch(() => {});
+  LocalDB.replaceAll(db, 'sales', APP_STATE.sales).catch(() => {});
+  LocalDB.setMeta(db, 'invCounter', APP_STATE.invCounter).catch(() => {});
+  LocalDB.replaceAll(db, 'returns', APP_STATE.returns || []).catch(() => {});
+  LocalDB.replaceAll(db, 'purchases', APP_STATE.purchases || []).catch(() => {});
 }
 
-try {
-  const tp = localStorage.getItem('bn_tenant'); if (tp) APP_STATE.tenantProfile = { ...APP_STATE.tenantProfile, ...JSON.parse(tp) };
-  const inv = localStorage.getItem('bn_inv'); if (inv) APP_STATE.inventory = JSON.parse(inv);
-  const cst = localStorage.getItem('bn_cust'); if (cst) APP_STATE.customers = JSON.parse(cst);
-  const sls = localStorage.getItem('bn_sales'); if (sls) APP_STATE.sales = JSON.parse(sls);
-  const seq = localStorage.getItem('bn_seq'); if (seq) APP_STATE.invCounter = parseInt(seq, 10);
-  const cnq = localStorage.getItem('bn_cn_seq'); if (cnq) APP_STATE.cnCounter = parseInt(cnq, 10);
-  const rts = localStorage.getItem('bn_returns'); if (rts) APP_STATE.returns = JSON.parse(rts);
-  const pch = localStorage.getItem('bn_purchases'); if (pch) APP_STATE.purchases = JSON.parse(pch);
-  APP_STATE.lastSyncedAt = localStorage.getItem('bn_last_synced') || null;
-} catch (e) {}
+// Single-key meta writes (invoice/credit-note counters, last-synced
+// timestamp) that used to be individual localStorage.setItem calls
+// scattered at their own call sites — kept as individual call sites
+// rather than folded into persistState(), so behavior at each of those
+// sites is unchanged, just retargeted to IndexedDB.
+function persistMeta(key, value) {
+  if (!APP_STATE._db) return;
+  LocalDB.setMeta(APP_STATE._db, key, value).catch(() => {});
+}
+
+// Replaces the old top-level `try { ...localStorage.getItem... } catch {}`
+// block, which ran synchronously at script-parse time — localStorage
+// allowed that; IndexedDB has no synchronous API, so this is now called
+// (and awaited) from bootApp(), before anything that reads APP_STATE runs.
+async function loadStateFromIndexedDB() {
+  const db = await LocalDB.openBillnawDB();
+  APP_STATE._db = db;
+
+  try {
+    const tp = await LocalDB.getMeta(db, 'tenantProfile');
+    if (tp) APP_STATE.tenantProfile = { ...APP_STATE.tenantProfile, ...tp };
+    const inv = await LocalDB.getAll(db, 'inventory'); if (inv.length) APP_STATE.inventory = inv;
+    const cst = await LocalDB.getAll(db, 'customers'); if (cst.length) APP_STATE.customers = cst;
+    const sls = await LocalDB.getAll(db, 'sales'); if (sls.length) APP_STATE.sales = sls;
+    const seq = await LocalDB.getMeta(db, 'invCounter'); if (seq != null) APP_STATE.invCounter = seq;
+    const cnq = await LocalDB.getMeta(db, 'cnCounter'); if (cnq != null) APP_STATE.cnCounter = cnq;
+    const rts = await LocalDB.getAll(db, 'returns'); if (rts.length) APP_STATE.returns = rts;
+    const pch = await LocalDB.getAll(db, 'purchases'); if (pch.length) APP_STATE.purchases = pch;
+    APP_STATE.lastSyncedAt = (await LocalDB.getMeta(db, 'lastSyncedAt')) || null;
+
+    SyncEngine._cache = await LocalDB.getAll(db, 'syncQueue');
+  } catch (e) {
+    console.warn('IndexedDB load failed, continuing with defaults:', e.message);
+  }
+}
+
+// Every APP_STATE default that used to be bare top-level script code,
+// relocated here (see each removal site for the "moved to
+// initAppStateDefaults()" comment left in its place). These must run
+// AFTER loadStateFromIndexedDB() resolves, not before — several of them
+// (`|| []` patterns) only matter if the load found nothing, same as
+// before the cutover; running them first would stomp real loaded data.
+function initAppStateDefaults() {
+  APP_STATE.cloudSession = APP_STATE.cloudSession ?? null;
+  APP_STATE.cloudProfile = APP_STATE.cloudProfile ?? null;
+  APP_STATE.vendors = APP_STATE.vendors || [];
+  APP_STATE.khataTab = 'customers';
+  APP_STATE.khataSearch = '';
+  APP_STATE.khataFilter = 'all';
+  APP_STATE.returns = APP_STATE.returns || [];
+  APP_STATE.returnDraft = null;
+  resetCatalogPaging();
+}
+
+// Replaces the old implicit "script finishes parsing = state is ready"
+// contract. Awaited from the DOMContentLoaded handler below, before any
+// UI code that reads APP_STATE runs — see docs/PHASE6_CUTOVER_PLAN.md §3
+// for why this ordering is load-bearing, not a formality.
+async function bootApp() {
+  await loadStateFromIndexedDB();
+  initAppStateDefaults();
+}
 
 /* ==========================================================================
    NETWORK EVENT LISTENERS & STATUS
@@ -426,13 +491,48 @@ function applyRoleSecurity(role) {
 // when error is null — falsy, so it happened to work, but a predicate that
 // returns three different types is a trap for the next person who uses it
 // with === or passes it to a filter.
-function isFatalSyncError(error) {
+//
+// errorCode, when available, is the Postgres SQLSTATE from the Supabase
+// client (SB.saveSale/savePurchase/processReturn now return it alongside
+// the message — see supabaseClient.js). '23505' is unique_violation: the
+// atomic RPCs' own idempotency check (SELECT-then-insert on idempotency_key)
+// already turns a normal retry into a successful "replayed" response with
+// no error at all, so a real 23505 here only happens in the narrow race
+// between two concurrent calls with the same key — still "already synced,
+// not a failure" either way. Checking the code is precise; the regex
+// fallback below only runs when no code is available (e.g. a thrown JS
+// exception with no Postgres error shape at all, or an older cached
+// version of these SB methods during a rolling deploy) and is kept for
+// that reason, not because it's still the primary signal.
+function isFatalSyncError(error, errorCode) {
   if (!error) return false;
+  if (errorCode) return errorCode !== '23505';
   return !/duplicate key/i.test(String(error));
 }
 
+// F5 fix (docs/SECURITY_REPORT.md, supabase/migrations/0014): the atomic
+// invoice/purchase/return RPCs skip a malformed line (bad item id, missing
+// item, non-positive quantity) rather than failing the whole transaction —
+// correct for offline resilience, but the money for that line was already
+// charged/credited while its stock movement silently didn't happen. The
+// RPCs now report which lines were skipped via `warnings`; this is the one
+// place that turns that into something the shop owner actually sees,
+// called after every successful (non-replayed) invoice/purchase/return.
+function reportRpcSkipWarnings(data) {
+  if (!data || !Array.isArray(data.warnings) || !data.warnings.length) return;
+  console.warn('RPC reported skipped line(s):', data.warnings);
+  const extra = data.warnings.length > 1 ? ` (+${data.warnings.length - 1} more)` : '';
+  showSaasToast(`⚠️ ${data.warnings.length} line(s) need attention: ${data.warnings[0]}${extra}`, 7000, 'err');
+}
+
 const SyncEngine = {
-  queueKey: 'bn_offline_sync_queue',
+  // In-memory mirror of the 'syncQueue' IndexedDB store — populated once
+  // at boot by loadStateFromIndexedDB(), kept in sync on every write. Same
+  // "synchronous in-memory truth, async durability underneath" split as
+  // APP_STATE/persistState() above: _read()/_write() stay synchronous so
+  // enqueue()/pendingCount()/pendingBreakdown() (called synchronously from
+  // UI code, e.g. the queue-count badge) don't need to change shape.
+  _cache: [],
 
   generateIdempotencyKey() {
     // Fixed "10000000-1000-4000-8000-100000000000" template — previously
@@ -446,11 +546,11 @@ const SyncEngine = {
     });
   },
 
-  _read() {
-    try { return JSON.parse(localStorage.getItem(this.queueKey) || '[]'); }
-    catch (e) { return []; }
+  _read() { return this._cache; },
+  _write(q) {
+    this._cache = q;
+    if (APP_STATE._db) LocalDB.replaceAll(APP_STATE._db, 'syncQueue', q).catch(() => {});
   },
-  _write(q) { localStorage.setItem(this.queueKey, JSON.stringify(q)); },
 
   // Unified queue. Previously only sales were queued — an offline return or
   // purchase was written to local state and then simply never reached the
@@ -489,10 +589,10 @@ const SyncEngine = {
       const kind = entry.kind || 'sale';
       const payload = entry.payload || entry;
 
-      let error = null;
+      let error = null, errorCode = null, data = null;
       try {
         if (kind === 'sale') {
-          ({ error } = await SB.saveSale(shopId, payload));
+          ({ data, error, errorCode } = await SB.saveSale(shopId, payload));
         } else if (kind === 'return') {
           if (!payload.cloudSaleId) {
             // The parent invoice hasn't synced yet, so there's no row to
@@ -501,18 +601,20 @@ const SyncEngine = {
             remaining.push(entry);
             continue;
           }
-          ({ error } = await SB.processReturn(shopId, payload.cloudSaleId, payload));
+          ({ data, error, errorCode } = await SB.processReturn(shopId, payload.cloudSaleId, payload));
         } else if (kind === 'purchase') {
-          ({ error } = await SB.savePurchase(shopId, payload));
+          ({ data, error, errorCode } = await SB.savePurchase(shopId, payload));
         }
       } catch (e) {
         error = e.message;
       }
 
       // A duplicate idempotency key means it already committed — success.
-      if (isFatalSyncError(error)) {
+      if (isFatalSyncError(error, errorCode)) {
         remaining.push(entry);
         console.warn(`Sync retry pending (${kind}):`, error);
+      } else {
+        reportRpcSkipWarnings(data);
       }
     }
 
@@ -520,7 +622,7 @@ const SyncEngine = {
     updateSyncIndicator();
     if (!remaining.length) {
       APP_STATE.lastSyncedAt = new Date().toISOString();
-      localStorage.setItem('bn_last_synced', APP_STATE.lastSyncedAt);
+      persistMeta('lastSyncedAt', APP_STATE.lastSyncedAt);
       updateLastSyncedLabel();
     }
   }
@@ -590,7 +692,7 @@ async function refreshFromCloud() {
     await SyncEngine.flushSyncQueue();      // push local changes up first
     await hydrateCloudData(APP_STATE.tenantProfile.shopId);  // then pull down
     APP_STATE.lastSyncedAt = new Date().toISOString();
-    localStorage.setItem('bn_last_synced', APP_STATE.lastSyncedAt);
+    persistMeta('lastSyncedAt', APP_STATE.lastSyncedAt);
     persistState();
     renderDashboard();
     renderCatalog();
@@ -614,8 +716,12 @@ async function refreshFromCloud() {
    readable and editable by anyone with devtools, so it protected nothing
    while creating the impression that it did.
    ========================================================================== */
-APP_STATE.cloudSession = null;
-APP_STATE.cloudProfile = null;
+// cloudSession/cloudProfile defaults moved to initAppStateDefaults()
+// (near persistState(), called from bootApp() after the IndexedDB load
+// resolves) — this used to be top-level script code that ran before the
+// (then-synchronous) storage load, now it would run BEFORE an async load
+// resolves and silently wipe a value the load just set. See that
+// function for every relocated default and why each one is here.
 
 const AuthFlow = {
   channel: 'phone',        // 'phone' | 'email'
@@ -1126,9 +1232,11 @@ async function hydrateCloudData(shopId) {
 
     if (maxSeen + 1 > APP_STATE.invCounter) {
       APP_STATE.invCounter = maxSeen + 1;
-      localStorage.setItem('bn_seq', APP_STATE.invCounter.toString());
-    localStorage.setItem('bn_returns', JSON.stringify(APP_STATE.returns || []));
-    localStorage.setItem('bn_purchases', JSON.stringify(APP_STATE.purchases || []));
+      persistMeta('invCounter', APP_STATE.invCounter);
+      if (APP_STATE._db) {
+        LocalDB.replaceAll(APP_STATE._db, 'returns', APP_STATE.returns || []).catch(() => {});
+        LocalDB.replaceAll(APP_STATE._db, 'purchases', APP_STATE.purchases || []).catch(() => {});
+      }
     }
   }
 }
@@ -1150,260 +1258,6 @@ async function fullSignOut() {
   showRequestStep();
 }
 function lockPOS() { fullSignOut(); }
-
-/* ==========================================================================
-   TENANT INDUSTRY LOCK
-   ========================================================================== */
-function applyIndustryLock() {
-  const profile = APP_STATE.tenantProfile;
-  const chipContainer = $id('sectorChipsBar');
-  const dlField = $id('custDrugLicense');
-  if (dlField) dlField.style.display = profile.assignedIndustry === 'Pharmacy' ? 'block' : 'none';
-
-  if (!profile.isLocked || profile.assignedIndustry === 'All') {
-    if (chipContainer) chipContainer.style.display = 'flex';
-    setTxt('sideSectorLabel', 'Universal ERP');
-    APP_STATE.activeSector = 'All';
-    return;
-  }
-
-  APP_STATE.activeSector = profile.assignedIndustry;
-  if (chipContainer) chipContainer.style.display = 'none';
-  setTxt('sideSectorLabel', `${profile.assignedIndustry} POS (LOCKED)`);
-}
-
-function syncProfileToDOM() {
-  const p = APP_STATE.tenantProfile;
-  setTxt('sideStoreName', p.shopName);
-  setVal('cfgName', p.shopName);
-  setVal('cfgGst', p.gstin);
-  setVal('cfgPhone', p.phone);
-  setVal('cfgAddress', p.address);
-  setVal('cfgUpiId', p.upiId);
-  setVal('cfgTerms', p.terms);
-  setVal('cfgBankName', p.bankName);
-  setVal('cfgBankAcc', p.bankAcc);
-  setVal('cfgDrugLicenseNo', p.drugLicenseNo || '');
-  setVal('cfgPanNumber', p.panNumber || '');
-
-  // Drug License only matters for a pharmacy — hidden for every other
-  // vertical rather than shown as a field nobody in, say, jewellery needs.
-  const dlRow = $id('cfgDrugLicenseRow');
-  if (dlRow) dlRow.style.display = p.assignedIndustry === 'Pharmacy' ? 'block' : 'none';
-
-  setTxt('pStoreName', p.shopName);
-  setTxt('pStoreAddr', p.address);
-  setTxt('pGstin', p.gstin || 'Unregistered');
-  setTxt('pStorePhone', p.phone);
-  setTxt('pBankDisplay', `${p.bankName} • A/C: ${p.bankAcc} • IFSC: ${p.bankIfsc}`);
-  setTxt('pUpiDisplay', p.upiId);
-  setTxt('pTermsDisplay', p.terms);
-
-  const dlDisplay = $id('pDrugLicenseRow');
-  if (dlDisplay) {
-    dlDisplay.style.display = (p.assignedIndustry === 'Pharmacy' && p.drugLicenseNo) ? 'block' : 'none';
-    setTxt('pDrugLicenseNo', p.drugLicenseNo || '');
-  }
-  const panDisplay = $id('pPanRow');
-  if (panDisplay) {
-    panDisplay.style.display = p.panNumber ? 'block' : 'none';
-    setTxt('pPanNumber', p.panNumber || '');
-  }
-}
-
-function saveAllSettings() {
-  const p = APP_STATE.tenantProfile;
-  p.shopName = $id('cfgName')?.value.trim() || p.shopName;
-  p.gstin = $id('cfgGst')?.value.trim() || '';
-  p.phone = $id('cfgPhone')?.value.trim() || '';
-  p.address = $id('cfgAddress')?.value.trim() || '';
-  p.upiId = $id('cfgUpiId')?.value.trim() || '';
-  p.terms = $id('cfgTerms')?.value.trim() || '';
-  p.bankName = $id('cfgBankName')?.value.trim() || '';
-  p.bankAcc = $id('cfgBankAcc')?.value.trim() || '';
-  p.drugLicenseNo = $id('cfgDrugLicenseNo')?.value.trim() || '';
-  p.panNumber = $id('cfgPanNumber')?.value.trim().toUpperCase() || '';
-  // NOTE: industry vertical is deliberately NOT touched here — it's locked
-  // at onboarding and shown read-only in Settings → Industry Vertical.
-  // This function used to read a #cfgIndustrySelect field that no longer
-  // exists in the DOM; reading it would have silently reset assignedIndustry
-  // to 'All' and isLocked to false on every save from any panel.
-
-  persistState();
-  syncProfileToDOM();
-  applyIndustryLock();
-  renderCatalog();
-  showSaasToast('Settings saved.', 2500);
-
-  if (APP_STATE.cloudSession && p.shopId) {
-    SB.updateShopSettings(p.shopId, {
-      name: p.shopName, gstin: p.gstin, phone: p.phone, address: p.address,
-      upi_id: p.upiId, terms: p.terms, bank_name: p.bankName, bank_acc: p.bankAcc,
-      drug_license_no: p.drugLicenseNo || null, pan_number: p.panNumber || null
-    });
-  }
-}
-
-/* ==========================================================================
-   SETTINGS — card list home + slide-over panels
-   ========================================================================== */
-function openSettingsHome() {
-  switchView('settings');
-  closeSettingsPanel();
-}
-
-function openSettingsPanel(key) {
-  $qa('.settings-panel').forEach(p => p.classList.remove('open'));
-  const panel = $id(`panel-${key}`);
-  const backdrop = $id('settingsPanelBackdrop');
-  if (!panel) return;
-  panel.classList.add('open');
-  if (backdrop) backdrop.classList.add('open');
-  document.body.classList.add('settings-panel-active');
-
-  if (key === 'hardware') updateLivePreview();
-  if (key === 'gst') loadComplianceSettingsIntoDOM();
-  if (key === 'industry') loadIndustrySettingsIntoDOM();
-  if (key === 'staff') loadStaffPanel();
-  if (key === 'subscription') loadSubscriptionPanel();
-}
-
-function closeSettingsPanel() {
-  $qa('.settings-panel.open').forEach(p => p.classList.remove('open'));
-  const backdrop = $id('settingsPanelBackdrop');
-  if (backdrop) backdrop.classList.remove('open');
-  document.body.classList.remove('settings-panel-active');
-}
-
-// Escape closes whichever panel is open — same "go back" gesture as
-// clicking outside, for keyboard/desktop users.
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && document.body.classList.contains('settings-panel-active')) {
-    closeSettingsPanel();
-  }
-});
-
-function toggleAccordion(accId) {
-  const item = $id(accId);
-  if (item) item.classList.toggle('open');
-}
-
-function updateLivePreview() {
-  const p = APP_STATE.tenantProfile;
-  setTxt('pvShopName', $id('cfgName')?.value || p.shopName);
-  setTxt('pvAddress', $id('cfgAddress')?.value || p.address);
-  setTxt('pvGst', $id('cfgGst')?.value || p.gstin);
-  setTxt('pvPhone', $id('cfgPhone')?.value || p.phone);
-  const bank = $id('cfgBankName')?.value || p.bankName || '';
-  const acc = $id('cfgBankAcc')?.value || p.bankAcc || '';
-  const upi = $id('cfgUpiId')?.value || p.upiId || '';
-  setTxt('pvBankInfo', bank ? `${bank} • A/C: ${acc}` : 'Add bank details above');
-  setTxt('pvUpiInfo', upi ? `UPI: ${upi}` : 'Add a UPI ID to enable scan-to-pay');
-}
-
-/* ---------- GST & Compliance panel ---------- */
-function loadComplianceSettingsIntoDOM() {
-  const p = APP_STATE.tenantProfile;
-  GstConfig.refreshAllRateSelects();
-  setVal('cfgDefaultGst', p.defaultGstRate != null ? String(p.defaultGstRate) : '18');
-  setVal('cfgDefaultHsn', p.defaultHsn || '');
-  const hsnChk = $id('cfgMandatoryHsn');
-  if (hsnChk) hsnChk.checked = !!p.mandatoryHsn;
-  const roundChk = $id('cfgShowRoundOff');
-  if (roundChk) roundChk.checked = p.showRoundOff !== false;
-  const inc = $id('cfgGstPriceModeInclusive');
-  const exc = $id('cfgGstPriceModeExclusive');
-  if (inc) inc.checked = (p.gstPriceMode || 'exclusive') === 'inclusive';
-  if (exc) exc.checked = (p.gstPriceMode || 'exclusive') === 'exclusive';
-  setVal('cfgLowStock', String(p.lowStockThreshold ?? 5));
-  setVal('cfgExpiryDays', String(p.expiryWarnDays ?? 30));
-}
-
-function saveComplianceSettings() {
-  const p = APP_STATE.tenantProfile;
-  p.defaultGstRate = parseFloat($id('cfgDefaultGst')?.value) || 18;
-  p.defaultHsn = $id('cfgDefaultHsn')?.value.trim() || '';
-  p.mandatoryHsn = !!$id('cfgMandatoryHsn')?.checked;
-  p.showRoundOff = !!$id('cfgShowRoundOff')?.checked;
-  p.gstPriceMode = $id('cfgGstPriceModeInclusive')?.checked ? 'inclusive' : 'exclusive';
-  persistState();
-}
-
-/* ---------- Industry Vertical panel ---------- */
-// Which item categories this app already tracks identifiers for, per
-// vertical — matches the fields commitModalItem already collects, so this
-// toggle enforces something that's genuinely wired up, not decorative.
-const INDUSTRY_TRACK_MAP = {
-  Electronics: { field: 'assignedIdentifier', noun: 'IMEI/Serial', categories: ['Electronics'] },
-  Jewelry:     { field: 'assignedIdentifier', noun: 'HUID',        categories: ['Jewelry'] },
-  Pharmacy:    { field: 'assignedIdentifier', noun: 'Batch No.',   categories: ['Pharmacy'] },
-};
-
-function loadIndustrySettingsIntoDOM() {
-  const p = APP_STATE.tenantProfile;
-  const ind = p.assignedIndustry || 'All';
-  const rule = INDUSTRY_TRACK_MAP[ind];
-
-  setTxt('industryLockName', ind === 'All' ? 'Universal Mode' : `${ind} Vertical`);
-  const pill = $id('industryLockPill');
-  const desc = $id('industryLockDesc');
-  const toggleBlock = $id('industryToggleBlock');
-
-  if (p.isLocked && ind !== 'All') {
-    if (pill) pill.style.display = 'inline-flex';
-    if (desc) setTxt('industryLockDesc', `This shop is locked to ${ind}. All bills use ${ind}-specific fields. Contact support to change vertical.`);
-  } else {
-    if (pill) pill.style.display = 'none';
-    if (desc) setTxt('industryLockDesc', 'This shop is not locked to a specific vertical — all categories are available.');
-  }
-
-  if (rule) {
-    if (toggleBlock) toggleBlock.style.display = 'block';
-    setTxt('requireIdLabel', `Block checkout if a ${ind} item has no ${rule.noun} assigned`);
-    const chk = $id('cfgRequireIdentifier');
-    if (chk) chk.checked = !!p.requireIdentifier;
-  } else if (toggleBlock) {
-    toggleBlock.style.display = 'none'; // Universal/Grocery: nothing to enforce here
-  }
-}
-
-function saveIndustrySettings() {
-  APP_STATE.tenantProfile.requireIdentifier = !!$id('cfgRequireIdentifier')?.checked;
-  persistState();
-}
-
-/* ---------- Staff & Roles panel ---------- */
-async function loadStaffPanel() {
-  const tbody = $id('staffTableBody');
-  if (!tbody) return;
-  tbody.innerHTML = `<tr><td colspan="3" style="text-align:center; color:var(--text-muted);">Loading…</td></tr>`;
-
-  if (!APP_STATE.cloudSession || !APP_STATE.tenantProfile.shopId) {
-    tbody.innerHTML = `<tr><td colspan="3" style="text-align:center; color:var(--text-muted);">Sign in to view staff.</td></tr>`;
-    return;
-  }
-
-  const { data, error } = await SB.fetchShopStaff(APP_STATE.tenantProfile.shopId);
-  if (error) {
-    tbody.innerHTML = `<tr><td colspan="3" style="text-align:center; color:var(--danger);">${esc(error)}</td></tr>`;
-    return;
-  }
-
-  if (!data || !data.length) {
-    tbody.innerHTML = `<tr><td colspan="3" style="text-align:center; color:var(--text-muted);">Just you, for now.</td></tr>`;
-    return;
-  }
-
-  tbody.innerHTML = data.map(m => {
-    const roleLabel = m.role === 'owner' ? 'Owner' : (m.role === 'cashier' ? 'Cashier' : m.role);
-    const canSeeCost = m.role !== 'cashier';
-    return `<tr>
-      <td><strong>${esc(m.full_name || 'Unnamed')}</strong></td>
-      <td><span class="pill ${m.role === 'owner' ? 'info' : 'draft'}">${roleLabel}</span></td>
-      <td>${canSeeCost ? '<span class="pill paid">Visible</span>' : '<span class="pill overdue">Hidden</span>'}</td>
-    </tr>`;
-  }).join('');
-}
 
 /* ==========================================================================
    CAMERA BARCODE & QR SCANNER ENGINE
@@ -1550,861 +1404,6 @@ function handleScannedCode(code) {
     alert(`Scanned code "${c}" not found in stock master.`);
   }
 }
-
-/* ==========================================================================
-   CUSTOMER 360° & AUTO-FILL PROFILE
-   ========================================================================== */
-function autoFillCustomer(query) {
-  setStep(3);
-  const q = query.trim().toLowerCase();
-  if (q.length < 2) return;
-
-  const match = APP_STATE.customers.find(c => c.phone.includes(q) || c.name.toLowerCase().includes(q));
-  if (match) {
-    setVal('custName', match.name);
-    setVal('custGstin', match.gstin || '');
-    setVal('custPan', match.pan || '');
-    setVal('custDrugLicense', match.drugLicenseNo || '');
-    setVal('custAddress', match.address || '');
-    // Only override the shop-default state if this customer actually has
-    // one on file — an empty saved value should fall back to the default,
-    // not blank it out.
-    if (match.stateCode) setVal('custState', match.stateCode);
-    else resetCustomerStateToShopDefault();
-    updateTaxTypeHint();
-  }
-}
-
-/* ==========================================================================
-   CUSTOMER 360 — SEARCH, STAR, EDIT, ARCHIVE/DELETE
-   ========================================================================== */
-function handleCust360Search(query) {
-  const results = $id('cust360SearchResults');
-  if (!results) return;
-
-  const q = query.trim().toLowerCase();
-  if (!q) { results.style.display = 'none'; return; }
-
-  const matches = APP_STATE.customers
-    .filter(c => c.name.toLowerCase().includes(q) || c.phone.includes(q))
-    .slice(0, 8);
-
-  if (!matches.length) {
-    results.innerHTML = `<div class="cc-item" style="cursor:default;">No matches</div>`;
-    results.style.display = 'block';
-    return;
-  }
-
-  results.innerHTML = matches.map(c => `
-    <button type="button" class="cc-item" onclick="selectCust360Result('${esc(c.phone)}', '${escJs(c.name)}')">
-      ${c.isStarred ? '⭐ ' : ''}${esc(c.name)} <span>${esc(c.phone)}</span>
-    </button>`).join('');
-  results.style.display = 'block';
-}
-
-function selectCust360Result(phone, name) {
-  setVal('cust360SearchInput', name);
-  setDisplay('cust360SearchResults', 'none');
-  renderCustomer360Profile(phone);
-}
-
-function toggleCurrentCustomerStar() {
-  const cust = APP_STATE.customers.find(c => c.phone === APP_STATE.c360Phone);
-  if (!cust) return;
-  cust.isStarred = !cust.isStarred;
-  updateStarButton(cust);
-  if (cust.id && APP_STATE.cloudSession) {
-    SB.setCustomerStar(cust.id, cust.isStarred).then(({ error }) => {
-      if (error) showSaasToast(`Star sync failed: ${error}`, 3500, 'err');
-    });
-  }
-}
-
-function updateStarButton(cust) {
-  const btn = $id('c360StarBtn');
-  if (btn) btn.innerHTML = cust.isStarred ? '⭐ Starred customer' : '☆ Star this customer';
-}
-
-function openCustEditModal(custOverride = null) {
-  const cust = custOverride || APP_STATE.customers.find(c => c.phone === APP_STATE.c360Phone);
-  if (!cust) { showSaasToast('Select a customer first.', 2500, 'err'); return; }
-
-  if (APP_STATE.c360Phone !== cust.phone) APP_STATE.c360Phone = cust.phone;
-
-  setVal('custEditName', cust.name);
-  setVal('custEditPhone', cust.phone);
-  setVal('custEditAddress', cust.address || '');
-  setVal('custEditGstin', cust.gstin || '');
-  setVal('custEditPan', cust.pan || '');
-  setVal('custEditDrugLicense', cust.drugLicenseNo || '');
-
-  const dlRow = $id('custEditDlRow');
-  if (dlRow) dlRow.style.display = APP_STATE.tenantProfile.assignedIndustry === 'Pharmacy' ? 'block' : 'none';
-
-  $id('custEditModal')?.classList.add('open');
-}
-
-function closeCustEditModal() { $id('custEditModal')?.classList.remove('open'); }
-
-function saveCustEdit() {
-  const cust = APP_STATE.customers.find(c => c.phone === APP_STATE.c360Phone);
-  if (!cust) return;
-
-  const name = $id('custEditName')?.value.trim();
-  if (!name) { showSaasToast('Name is required.', 2500, 'err'); return; }
-
-  cust.name = name;
-  cust.address = $id('custEditAddress')?.value.trim() || '';
-  cust.gstin = $id('custEditGstin')?.value.trim() || '';
-  cust.pan = $id('custEditPan')?.value.trim().toUpperCase() || '';
-  cust.drugLicenseNo = $id('custEditDrugLicense')?.value.trim() || '';
-  // Phone is the client-side key everywhere (cart, sales, dropdowns) —
-  // changing it here would silently disconnect this profile from its own
-  // history, so it's shown for reference but not editable from this panel.
-
-  persistState();
-  renderCustomer360Profile(cust.phone);
-  closeCustEditModal();
-  showSaasToast('Profile updated.', 2500);
-
-  if (cust.id && APP_STATE.cloudSession) {
-    SB.updateCustomerDetails(cust.id, {
-      name: cust.name, address: cust.address, gstin: cust.gstin || null,
-      pan: cust.pan || null, drug_license_no: cust.drugLicenseNo || null
-    }).then(({ error }) => { if (error) showSaasToast(`Sync failed: ${error}`, 3500, 'err'); });
-  }
-}
-
-// Archive is the default, reversible action. True deletion is only offered
-// — and only succeeds — when the server confirms zero sales history, so a
-// customer with even one past order can never be permanently erased from
-// this screen.
-async function archiveCurrentCustomer() {
-  const cust = APP_STATE.customers.find(c => c.phone === APP_STATE.c360Phone);
-  if (!cust) { showSaasToast('Select a customer first.', 2500, 'err'); return; }
-
-  const hasHistory = (cust.totalOrdersVal || 0) > 0 || (cust.ordersLast90d || 0) > 0;
-
-  if (hasHistory) {
-    if (!confirm(`${cust.name} has order history and cannot be permanently deleted — GST records must stay intact. Archive them instead? They'll disappear from every list but their invoices are untouched.`)) return;
-    APP_STATE.customers = APP_STATE.customers.filter(c => c.phone !== cust.phone);
-    persistState();
-    closeReportDetail();
-    showSaasToast(`${cust.name} archived.`, 3000);
-    if (cust.id && APP_STATE.cloudSession) {
-      SB.archiveCustomer(cust.id, true).then(({ error }) => {
-        if (error) showSaasToast(`Archive sync failed: ${error}`, 3500, 'err');
-      });
-    }
-    return;
-  }
-
-  if (!confirm(`Permanently delete ${cust.name}? They have no order history, so this cannot be undone from within the app.`)) return;
-
-  if (cust.id && APP_STATE.cloudSession) {
-    const { error } = await SB.deleteCustomerIfUnused(APP_STATE.tenantProfile.shopId, cust.id);
-    if (error) { showSaasToast(error, 5000, 'err'); return; } // server is the real guard, e.g. a sale synced from another device since this one loaded
-  }
-
-  APP_STATE.customers = APP_STATE.customers.filter(c => c.phone !== cust.phone);
-  persistState();
-  closeReportDetail();
-  showSaasToast(`${cust.name} deleted.`, 2500);
-}
-
-function renderCustomer360Profile(custPhone) {
-  const cust = APP_STATE.customers.find(c => c.phone === custPhone) || APP_STATE.customers[0];
-  if (!cust) return;
-
-  APP_STATE.c360Phone = cust.phone;
-
-  setTxt('c360Name', cust.name);
-  setTxt('c360Contact', [
-    cust.phone,
-    cust.gstin || 'Unregistered / B2C',
-    cust.pan ? `PAN ${cust.pan}` : '',
-    cust.address || ''
-  ].filter(Boolean).join(' · '));
-  updateStarButton(cust);
-  setTxt('c360Ltv', `₹${(cust.totalOrdersVal || 0).toLocaleString('en-IN')}`);
-  setTxt('c360Due', `₹${(cust.dues || 0).toLocaleString('en-IN')}`);
-
-  const thead = $id('drillTableHead');
-  const tbody = $id('drillTableBody');
-  if (!thead || !tbody) return;
-
-  // Derived from the actual sales ledger, not from a per-customer
-  // orderHistory array. That array is only ever appended to on the device
-  // that made the sale and is never rehydrated from Supabase — so on a
-  // second device (or after a cache clear) every customer wrongly showed
-  // "no prior sales". Deriving from APP_STATE.sales makes this correct
-  // everywhere, and automatically reflects returns too.
-  const history = (APP_STATE.sales || [])
-    .filter(s => s.customer?.phone === cust.phone)
-    .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-
-  const returnsFor = inv => (APP_STATE.returns || []).filter(r => r.invoiceNo === inv);
-
-  thead.innerHTML = `<tr>
-      <th>Invoice #</th><th>Date</th>
-      <th>Products / Identifiers</th>
-      <th>Mode</th><th>Status</th>
-      <th style="text-align:right;">Amount</th>
-      <th style="text-align:center;">Action</th>
-    </tr>`;
-
-  if (!history.length) {
-    tbody.innerHTML = `<tr><td colspan="7" style="text-align:center; color:var(--text-muted); padding:24px;">No purchases recorded for this party yet.</td></tr>`;
-    return;
-  }
-
-  tbody.innerHTML = history.map(s => {
-    const itemText = (s.items || []).map(i =>
-      `${esc(i.name)} ×${i.qty}${i.assignedIdentifier ? ` <code style="font-size:0.72rem; color:var(--text-muted);">${esc(i.assignedIdentifier)}</code>` : ''}`
-    ).join('<br>');
-
-    const rets = returnsFor(s.invoiceNo);
-    let pill = 'paid', label = 'PAID';
-    if (s.status === 'returned') { pill = 'overdue'; label = 'RETURNED'; }
-    else if (s.status === 'partially_returned') { pill = 'pending'; label = 'PART. RETURNED'; }
-    else if (s.tender === 'Khata') { pill = 'pending'; label = 'DUE'; }
-
-    const canReturn = s.status !== 'returned';
-    return `<tr>
-      <td><strong>${esc(s.invoiceNo)}</strong>${rets.length ? `<br><small style="color:var(--text-muted);">${rets.map(r => r.creditNoteNo).join(', ')}</small>` : ''}</td>
-      <td>${s.date}</td>
-      <td style="font-size:0.82rem;">${itemText || '—'}</td>
-      <td>${esc(s.tender)}</td>
-      <td><span class="pill ${pill}">${label}</span></td>
-      <td style="text-align:right; font-weight:800;">₹${(s.total || 0).toFixed(2)}${
-        s.returnedValue ? `<br><small style="color:var(--danger); font-weight:600;">−₹${s.returnedValue.toFixed(2)} returned</small>` : ''
-      }</td>
-      <td style="text-align:center;">
-        ${canReturn
-          ? `<button class="btn-pill secondary" style="padding:6px 12px; font-size:0.74rem;" onclick="openReturnModal('${esc(s.invoiceNo)}')">Return</button>`
-          : '<span style="color:var(--text-faint); font-size:0.76rem;">—</span>'}
-      </td>
-    </tr>`;
-  }).join('');
-}
-
-/* Exports every purchase line for the selected party — one row per line
-   item, not per invoice, because that's what an accountant or a warranty
-   claim actually needs (which serial, on which bill, on which date). */
-function exportCustomer360() {
-  const cust = APP_STATE.customers.find(c => c.phone === APP_STATE.c360Phone);
-  if (!cust) { showSaasToast('Select a customer first.', 3000, 'err'); return; }
-
-  const history = (APP_STATE.sales || [])
-    .filter(s => s.customer?.phone === cust.phone)
-    .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
-
-  if (!history.length) { showSaasToast('No purchases to export for this party.', 3000, 'err'); return; }
-
-  const headers = ['Invoice', 'Date', 'Status', 'Item', 'HSN', 'Identifier',
-                   'Qty', 'Rate', 'Taxable', 'GST %', 'GST Amt', 'Line Total', 'Mode'];
-  const rows = [];
-  history.forEach(s => {
-    (s.items || []).forEach(i => {
-      rows.push([
-        s.invoiceNo, s.date, (s.status || 'active').toUpperCase(),
-        i.name, i.hsn || '', i.assignedIdentifier || '',
-        i.qty, i.price, i.taxableValue,
-        (i.gstRateAtBilling !== undefined ? i.gstRateAtBilling : i.gst),
-        i.gstAmount, i.totalAmount, s.tender
-      ]);
-    });
-  });
-
-  exportToExcel(
-    `customer-${cust.phone}-${new Date().toISOString().slice(0, 10)}`,
-    `${cust.name} — Purchase History`,
-    headers, rows,
-    { filter: `${cust.name} · ${cust.phone} · Due ₹${(cust.dues || 0).toFixed(2)}` }
-  );
-}
-
-/* ==========================================================================
-   INWARD PURCHASE & AI OCR (ONLINE RESTRICTED)
-   ========================================================================== */
-// Populates the Division datalist for whatever vendor name the owner has
-// typed so far — matched against known vendors client-side first (instant,
-// no network wait while typing), falling back to a cloud lookup only if
-// the name matches a vendor we don't have cached locally yet.
-let purVendorLookupTimer = null;
-function onPurVendorInput(value) {
-  clearTimeout(purVendorLookupTimer);
-  const datalist = $id('purDivisionOptions');
-  if (!datalist) return;
-
-  const name = value.trim().toLowerCase();
-  if (!name) { datalist.innerHTML = ''; return; }
-
-  const localMatch = (APP_STATE.vendors || []).find(v => v.name.toLowerCase() === name);
-  if (localMatch) { populateDivisionDatalist(localMatch.id); return; }
-
-  // Debounced cloud lookup — this fires while the owner is still typing,
-  // so a lookup per keystroke would be wasteful and would race itself.
-  purVendorLookupTimer = setTimeout(async () => {
-    if (!APP_STATE.cloudSession) return;
-    const { data } = await SB.client.from('vendors')
-      .select('id').eq('shop_id', APP_STATE.tenantProfile.shopId)
-      .ilike('name', value.trim()).maybeSingle();
-    if (data?.id) populateDivisionDatalist(data.id);
-  }, 400);
-}
-
-async function populateDivisionDatalist(vendorId) {
-  const datalist = $id('purDivisionOptions');
-  if (!datalist) return;
-  const { data } = await SB.fetchVendorDivisions(APP_STATE.tenantProfile.shopId, vendorId);
-  datalist.innerHTML = (data || []).map(d => `<option value="${esc(d.name)}"></option>`).join('');
-}
-
-function openInwardPurchaseModal() {
-  populateRestockPicker();
-  const m = $id('inwardPurchaseModal');
-  if (m) m.classList.add('open');
-}
-function closeInwardModal() {
-  const m = $id('inwardPurchaseModal');
-  if (m) m.classList.remove('open');
-}
-
-function toggleInwardMode(mode) {
-  const manView = $id('inwardManualView');
-  const aiView = $id('inwardAiView');
-  const btnMan = $id('btnInwardManual');
-  const btnAi = $id('btnInwardAi');
-
-  if (mode === 'manual') {
-    if (manView) manView.style.display = 'block';
-    if (aiView) aiView.style.display = 'none';
-    if (btnMan) btnMan.classList.add('active');
-    if (btnAi) btnAi.classList.remove('active');
-  } else {
-    if (!navigator.onLine) {
-      alert("⚠️ AI Invoice Ingestion requires an active internet connection.\nPlease connect or use Manual Entry.");
-      return;
-    }
-    if (manView) manView.style.display = 'none';
-    if (aiView) aiView.style.display = 'block';
-    if (btnMan) btnMan.classList.remove('active');
-    if (btnAi) btnAi.classList.add('active');
-  }
-}
-
-// Maps a local inventory item to Supabase's items table shape and upserts.
-// Client-generated ids must be real UUIDs (not Date.now() strings) to match
-// the uuid primary key — see the id generation fix below.
-async function syncItemToCloud(item) {
-  if (!APP_STATE.cloudSession) return;
-  const shopId = APP_STATE.tenantProfile.shopId;
-  const { error } = await SB.saveItem({
-    id: item.id,
-    shop_id: shopId,
-    name: item.name,
-    category: item.category,
-    barcode: item.barcode || null,
-    hsn: item.hsn,
-    gst: item.gst,
-    price: item.price,
-    cost: item.cost,
-    stock: item.stock,
-    serials: item.serials || [],
-    huids: item.huids || [],
-    batches: item.batches || [],
-    meta: item.meta || {},
-  });
-  if (error) console.warn('Item cloud sync failed for', item.name, error);
-}
-
-
-/* ==========================================================================
-   QUICK RESTOCK
-   Repeat purchases of a product already in stock were matched by comparing
-   the typed name string — a trailing space or "Motorola G84" vs
-   "Motorola G84 5G" silently created a duplicate SKU with its own stock
-   count and serial pool. Selecting the real product by id removes that
-   whole class of error.
-   ========================================================================== */
-function populateRestockPicker() {
-  const sel = $id('purExistingItem');
-  if (!sel) return;
-  const items = [...(APP_STATE.inventory || [])].sort((a, b) => a.name.localeCompare(b.name));
-  sel.innerHTML = `<option value="">— New product / enter manually below —</option>` +
-    items.map(i => `<option value="${i.id}">${esc(i.name)} — ${i.stock} in stock · HSN ${esc(i.hsn || '—')}</option>`).join('');
-}
-
-function prefillFromExistingItem(itemId) {
-  const idField = $id('purExistingItemId');
-  if (!itemId) {
-    if (idField) idField.value = '';
-    ['purName', 'purBarcode', 'purHsn', 'purIdentifiers'].forEach(f => setVal(f, ''));
-    setDisplay('restockNotice', 'none');
-    return;
-  }
-
-  const it = APP_STATE.inventory.find(i => i.id === itemId);
-  if (!it) return;
-
-  if (idField) idField.value = it.id;
-  setVal('purName', it.name);
-  setVal('purBarcode', it.barcode || '');
-  setVal('purHsn', it.hsn || '');
-  setVal('purGst', String(it.gst));
-  setVal('purCategory', it.category);
-  setVal('purCost', it.cost || '');
-  setVal('purPrice', it.price || '');
-  setVal('purIdentifiers', ''); // new units bring new serials — never reuse the old list
-
-  const notice = $id('restockNotice');
-  if (notice) {
-    notice.style.display = 'block';
-    notice.innerHTML = `Restocking <strong>${esc(it.name)}</strong> — currently ${it.stock} in stock. New quantity will be added to that, and any serials/batches you enter are appended to the existing pool.`;
-  }
-}
-
-function saveManualPurchase() {
-  const name = $id('purName')?.value.trim();
-  const category = $id('purCategory')?.value || 'Electronics';
-  const barcode = $id('purBarcode')?.value.trim() || '';
-  const hsn = $id('purHsn')?.value.trim() || '8517';
-  const gst = parseInt($id('purGst')?.value, 10) || 18;
-  const qty = parseInt($id('purQty')?.value, 10) || 1;
-  const cost = parseFloat($id('purCost')?.value) || 0;
-  const price = parseFloat($id('purPrice')?.value) || (cost > 0 ? cost * 1.25 : 100);
-  const rawIds = $id('purIdentifiers')?.value || '';
-  const idArray = rawIds.split(/[\n,]+/).map(s => s.trim()).filter(Boolean);
-
-  if (!name || qty <= 0) return alert("Enter a valid Item Name and Quantity!");
-
-  let targetItem;
-  // Prefer the explicitly-picked product id; fall back to name match only
-  // when the user typed a new product rather than selecting one.
-  const pickedId = $id('purExistingItemId')?.value;
-  const existing = pickedId
-    ? APP_STATE.inventory.find(i => i.id === pickedId)
-    : APP_STATE.inventory.find(i => i.name.trim().toLowerCase() === name.trim().toLowerCase());
-  if (existing) {
-    existing.stock += qty;
-    if (cost > 0) existing.cost = cost;
-    if (price > 0) existing.price = price;
-    if (barcode) existing.barcode = barcode;
-
-    if (category === 'Electronics') {
-      existing.serials = Array.isArray(existing.serials) ? existing.serials : [];
-      idArray.forEach(id => { if (!existing.serials.includes(id)) existing.serials.push(id); });
-    } else if (category === 'Jewelry') {
-      existing.huids = Array.isArray(existing.huids) ? existing.huids : [];
-      idArray.forEach(id => { if (!existing.huids.includes(id)) existing.huids.push(id); });
-    }
-    targetItem = existing;
-    alert(`✅ Incremented stock for existing item: ${name} (+${qty} units)`);
-  } else {
-    const metaByCategory = {
-      Electronics: { imei: idArray[0] || '', warranty: '' },
-      Jewelry: { karat: '22K', netWt: 0, grossWt: 0, making: 0 },
-      Pharmacy: { batch: idArray[0] || '', expiry: '2027-12' },
-      Grocery: { pack: '' }
-    };
-
-    targetItem = {
-      id: crypto.randomUUID(),
-      name,
-      category,
-      barcode,
-      hsn,
-      gst,
-      cost,
-      price,
-      stock: qty,
-      serials: category === 'Electronics' ? idArray : [],
-      huids: category === 'Jewelry' ? idArray : [],
-      batches: category === 'Pharmacy' && idArray.length ? [{ batch: idArray[0], expiry: '2027-12', stock: qty }] : [],
-      meta: metaByCategory[category] || { pack: '' }
-    };
-    APP_STATE.inventory.push(targetItem);
-    alert(`✅ Created and added new item to stock: ${name}`);
-  }
-
-  persistState();
-  syncItemToCloud(targetItem);
-
-  // Record the supplier bill itself, not just the stock movement (P1 #4).
-  recordPurchaseBill({
-    vendor: {
-      name: $id('purVendor')?.value.trim() || '',
-      gstin: '', phone: '', stateCode: ''
-    },
-    billNo: $id('purBillNo')?.value.trim() || '',
-    divisionName: $id('purDivision')?.value.trim() || '',
-    items: [{
-      id: targetItem.id, name: targetItem.name, hsn: targetItem.hsn,
-      gst: targetItem.gst, qty, cost, price,
-      identifier: idArray[0] || '', expiry: ''
-    }],
-    source: 'manual'
-  });
-
-  closeInwardModal();
-  renderCatalog();
-}
-
-/* ==========================================================================
-   PURCHASE BILL RECORDING  (P1 #4)
-   The stock movement was already handled locally; this persists the vendor
-   bill behind it so cost history, payables and GSTR-2 data survive a cache
-   clear or a move to another device.
-   ========================================================================== */
-APP_STATE.purchases = APP_STATE.purchases || [];
-
-function recordPurchaseBill({ vendor, billNo, divisionName = '', items, source = 'manual' }) {
-  const lines = (items || []).filter(i => i.qty > 0);
-  if (!lines.length) return;
-
-  // Purchase GST uses the same engine as sales so input tax and output tax
-  // are computed identically — a mismatch between the two is exactly what
-  // makes a GSTR-3B reconciliation fail.
-  const includeGst = APP_STATE.tenantProfile.gstPriceMode === 'inclusive';
-  const priced = lines.map(l => ({
-    ...l,
-    ...TaxEngine.computeLine({ price: l.cost, qty: l.qty, gstRate: l.gst, includeGst })
-  }));
-  const totals = TaxEngine.computeInvoiceTotals(priced);
-
-  const purchase = {
-    idempotency_key: SyncEngine.generateIdempotencyKey(),
-    vendor: vendor || {},
-    billNo: billNo || '',
-    // Division is scoped server-side to its vendor (same name under two
-    // different companies must not collide) — see create_purchase_atomic.
-    divisionName: divisionName || '',
-    billDate: new Date().toISOString().slice(0, 10),
-    date: new Date().toLocaleDateString('en-IN'),
-    timestamp: new Date().toISOString(),
-    taxable: totals.taxable,
-    gstTotal: totals.gstTotal,
-    roundOff: totals.roundOff,
-    total: totals.total,
-    interstate: TaxEngine.isInterstate({
-      customerGstin: vendor?.gstin || '',
-      customerStateCode: vendor?.stateCode || '',
-      shopStateCode: APP_STATE.tenantProfile.stateCode || ''
-    }),
-    paymentStatus: 'unpaid',
-    amountPaid: 0,
-    source,
-    items: priced
-  };
-
-  APP_STATE.purchases.push(purchase);
-  persistState();
-
-  if (APP_STATE.cloudSession && navigator.onLine) {
-    SB.savePurchase(APP_STATE.tenantProfile.shopId, purchase).then(({ error }) => {
-      if (isFatalSyncError(error)) SyncEngine.enqueue(purchase, 'purchase');
-      updateSyncIndicator();
-      APP_STATE.vendorsLoaded = false; // force a refetch so the new/updated division shows up next time Khata → Vendors opens
-    });
-  } else {
-    SyncEngine.enqueue(purchase, 'purchase');
-  }
-}
-
-/* ==========================================================================
-   AI PURCHASE INGESTION — client side
-   The Edge Function returns a validated, reconciled bill (header + grouped
-   items + derived totals + warnings). This screen's job is to make a human
-   confirm it before anything touches stock, because an OCR mistake written
-   into inventory is far more expensive to unwind than one caught here.
-   ========================================================================== */
-async function processAiInvoice(event) {
-  const file = event.target.files && event.target.files[0];
-  if (!file) return;
-
-  if (!navigator.onLine) {
-    showSaasToast('AI reading needs an internet connection. Use Manual Entry for now.', 4000, 'err');
-    event.target.value = '';
-    return;
-  }
-  if (!APP_STATE.cloudSession) {
-    showSaasToast('Sign in to your cloud account to use AI invoice reading.', 4000, 'err');
-    event.target.value = '';
-    return;
-  }
-
-  setDisplay('aiProgressBox', 'block');
-  setTxt('aiProgressText', 'Uploading and reading the bill…');
-  setDisplay('aiStagingSection', 'none');
-
-  const { bill, error } = await SB.parseInvoiceImage(file);
-
-  setDisplay('aiProgressBox', 'none');
-  event.target.value = ''; // allow re-uploading the same file after a fix
-
-  if (error) {
-    showSaasToast(`AI reading failed: ${error}`, 6000, 'err');
-    return;
-  }
-
-  const items = bill?.bill_items || [];
-  if (!items.length) {
-    showSaasToast('No line items could be read. Try a flatter, better-lit photo — or use Manual Entry.', 6000, 'err');
-    return;
-  }
-
-  APP_STATE.aiBill = bill;
-
-  // Flatten to the staging shape, keeping every tracking identifier.
-  APP_STATE.aiStagingItems = items.map(it => {
-    const tm = it.tracking_metadata || {};
-    return {
-      name: it.product_name,
-      hsn: it.hsn_sac || '',
-      gst: Number(it.gst_percentage) || 0,
-      qty: Number(it.quantity) || 0,
-      cost: Number(it.unit_rate) || 0,
-      lineTotal: Number(it.line_total_inclusive) || 0,
-      serials: Array.isArray(tm.serial_or_imei) ? tm.serial_or_imei : [],
-      batch: tm.batch_number || '',
-      expiry: tm.expiry_date || '',
-      huid: tm.hudi_or_other_id || '',
-      // Resolved against existing stock so the reviewer can see at a glance
-      // whether this is a restock or a brand-new SKU.
-      matchedId: matchInventoryItem(it.product_name)?.id || null
-    };
-  });
-
-  renderAiBillHeader(bill);
-  renderAiStagingTable();
-  setDisplay('aiStagingSection', 'block');
-}
-
-// Fuzzy-matches an extracted product name to existing stock. Exact match
-// first, then a normalised compare — OCR routinely returns
-// "Samsung  Galaxy A55" for an item saved as "Samsung Galaxy A55", and a
-// strict compare would create a duplicate SKU with its own serial pool.
-function matchInventoryItem(name) {
-  const norm = v => String(v || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-  const target = norm(name);
-  if (!target) return null;
-  const inv = APP_STATE.inventory || [];
-  return inv.find(i => norm(i.name) === target)
-      || inv.find(i => norm(i.name).includes(target) || target.includes(norm(i.name)))
-      || null;
-}
-
-function renderAiBillHeader(bill) {
-  const h = bill.bill_header || {};
-  const sum = bill.bill_summary || {};
-  const meta = bill.extraction_meta || {};
-
-  setTxt('aiVendorName', h.vendor_name || 'Not detected');
-  setTxt('aiInvoiceNo', h.invoice_number || 'Not detected');
-  setTxt('aiInvoiceDate', h.invoice_date || 'Not detected');
-  setTxt('aiSupplierGstin', h.supplier_gstin || 'Not detected');
-  setTxt('aiBillTotal', `₹${(sum.grand_total || 0).toFixed(2)}`);
-
-  // Confidence is shown prominently rather than buried: a "low" badge is the
-  // signal to check this bill against the paper before merging.
-  const badge = $id('aiConfidenceBadge');
-  if (badge) {
-    const c = meta.confidence || 'medium';
-    badge.className = `pill ${c === 'high' ? 'paid' : c === 'medium' ? 'pending' : 'overdue'}`;
-    badge.innerText = `${c.toUpperCase()} CONFIDENCE`;
-  }
-
-  const warnBox = $id('aiWarningsBox');
-  if (warnBox) {
-    const warnings = meta.warnings || [];
-    if (!warnings.length) {
-      warnBox.style.display = 'none';
-    } else {
-      warnBox.style.display = 'block';
-      warnBox.innerHTML = `<strong>${warnings.length} thing(s) to check:</strong><ul>` +
-        warnings.map(w => `<li>${esc(w)}</li>`).join('') + `</ul>`;
-    }
-  }
-
-  // Show the model's own total next to the derived one when they disagree —
-  // the reviewer needs to see both numbers to decide which is right.
-  const cmp = $id('aiTotalCompare');
-  if (cmp) {
-    const printed = sum.printed_grand_total;
-    if (printed && Math.abs(printed - (sum.grand_total || 0)) > 1) {
-      cmp.style.display = 'block';
-      cmp.innerHTML = `Bill shows <strong>₹${printed.toFixed(2)}</strong>, line items add to <strong>₹${(sum.grand_total || 0).toFixed(2)}</strong>. Verify against the paper before merging.`;
-    } else {
-      cmp.style.display = 'none';
-    }
-  }
-}
-
-function renderAiStagingTable() {
-  const tbody = $id('aiStagingBody');
-  setTxt('aiStagingCount', APP_STATE.aiStagingItems.length);
-  if (!tbody) return;
-
-  tbody.innerHTML = APP_STATE.aiStagingItems.map((it, idx) => {
-    const ids = [
-      ...it.serials,
-      it.batch ? `Batch ${it.batch}` : '',
-      it.expiry ? `Exp ${it.expiry}` : '',
-      it.huid ? `HUID ${it.huid}` : ''
-    ].filter(Boolean);
-
-    const serialWarn = it.serials.length > 0 && it.serials.length !== it.qty;
-
-    return `<tr>
-      <td>
-        <strong>${esc(it.name)}</strong>
-        ${it.matchedId
-          ? '<br><span class="pill info" style="margin-top:3px;">Restock</span>'
-          : '<br><span class="pill draft" style="margin-top:3px;">New product</span>'}
-      </td>
-      <td><code>${esc(it.hsn || '—')}</code></td>
-      <td style="max-width:200px; font-size:0.74rem;">
-        ${ids.length ? ids.map(v => `<code>${esc(v)}</code>`).join('<br>') : '<span style="color:var(--text-faint);">none</span>'}
-        ${serialWarn ? `<br><span style="color:var(--danger); font-size:0.7rem;">${it.serials.length} ID(s) for ${it.qty} unit(s)</span>` : ''}
-      </td>
-      <td style="text-align:center;">${it.gst}%</td>
-      <td style="text-align:center;">
-        <input type="number" min="0" value="${it.qty}" style="width:58px; padding:5px; text-align:center; border:1px solid var(--border); border-radius:7px;"
-               oninput="editAiStagingField(${idx}, 'qty', this.value)">
-      </td>
-      <td style="text-align:right;">
-        <input type="number" min="0" step="0.01" value="${it.cost}" style="width:84px; padding:5px; text-align:right; border:1px solid var(--border); border-radius:7px;"
-               oninput="editAiStagingField(${idx}, 'cost', this.value)">
-      </td>
-      <td style="text-align:center;">
-        <button class="btn-pill secondary" style="padding:4px 9px; font-size:0.7rem;" onclick="discardAiStagingItem(${idx})">Drop</button>
-      </td>
-    </tr>`;
-  }).join('');
-}
-
-// Every extracted value stays editable. OCR is a first draft, not an
-// authority — the shop owner looking at the paper bill is.
-function editAiStagingField(idx, field, value) {
-  const it = APP_STATE.aiStagingItems[idx];
-  if (!it) return;
-  const n = parseFloat(value);
-  it[field] = isFinite(n) && n >= 0 ? n : 0;
-}
-
-function discardAiStagingItem(idx) {
-  APP_STATE.aiStagingItems.splice(idx, 1);
-  renderAiStagingTable();
-  if (!APP_STATE.aiStagingItems.length) setDisplay('aiStagingSection', 'none');
-}
-
-/* Commits the whole reviewed bill: stock in, purchase recorded, vendor
-   payables updated — one confirmation, one atomic server call. */
-function commitAiBill() {
-  const staged = APP_STATE.aiStagingItems || [];
-  if (!staged.length) { showSaasToast('Nothing to merge.', 3000, 'err'); return; }
-
-  const zeroQty = staged.filter(i => i.qty <= 0);
-  if (zeroQty.length) {
-    showSaasToast(`${zeroQty.length} line(s) have quantity 0 — set a quantity or drop them first.`, 5000, 'err');
-    return;
-  }
-
-  const header = APP_STATE.aiBill?.bill_header || {};
-  const purchaseLines = [];
-
-  staged.forEach(st => {
-    let target = st.matchedId ? APP_STATE.inventory.find(i => i.id === st.matchedId) : null;
-
-    if (target) {
-      target.stock += st.qty;
-      if (st.cost > 0) target.cost = st.cost;
-      if (st.hsn) target.hsn = st.hsn;
-    } else {
-      // Category is inferred from which identifier type the bill carried —
-      // a batch+expiry is a pharmacy line, a HUID is jewellery, a 15-digit
-      // IMEI is electronics. Better than defaulting everything to one.
-      const category =
-        st.huid ? 'Jewelry'
-        : (st.batch || st.expiry) ? 'Pharmacy'
-        : st.serials.some(s => /^\d{15}$/.test(s)) ? 'Electronics'
-        : (APP_STATE.tenantProfile.assignedIndustry !== 'All'
-            ? APP_STATE.tenantProfile.assignedIndustry : 'Grocery');
-
-      const initialMeta =
-        category === 'Electronics' ? { imei: '', warranty: '' }
-        : category === 'Jewelry' ? { karat: '22K', netWt: 0, grossWt: 0, making: 0 }
-        : category === 'Pharmacy' ? { batch: st.batch || '', expiry: st.expiry || '' }
-        : { pack: '' };
-
-      target = {
-        id: crypto.randomUUID(),
-        name: st.name, category, barcode: '',
-        hsn: st.hsn || APP_STATE.tenantProfile.defaultHsn || '',
-        gst: st.gst, cost: st.cost,
-        price: st.cost > 0 ? TaxEngine.round2(st.cost * 1.2) : 0,
-        stock: st.qty,
-        serials: [], huids: [], batches: [],
-        meta: /** @type {any} */ (initialMeta)
-      };
-      APP_STATE.inventory.push(target);
-    }
-
-    // Attach identifiers to the right pool for the item's category.
-    if (st.serials.length) {
-      if (target.category === 'Jewelry') {
-        target.huids = target.huids || [];
-        st.serials.forEach(v => { if (!target.huids.includes(v)) target.huids.push(v); });
-      } else {
-        target.serials = target.serials || [];
-        st.serials.forEach(v => { if (!target.serials.includes(v)) target.serials.push(v); });
-      }
-    }
-    if (st.huid && !(target.huids || []).includes(st.huid)) {
-      target.huids = target.huids || [];
-      target.huids.push(st.huid);
-    }
-    if (st.batch) {
-      target.batches = target.batches || [];
-      target.batches.push({ batch: st.batch, expiry: st.expiry || '', stock: st.qty });
-    }
-
-    syncItemToCloud(target);
-
-    purchaseLines.push({
-      id: target.id, name: target.name, hsn: target.hsn, gst: st.gst,
-      qty: st.qty, cost: st.cost, price: target.price,
-      identifier: st.serials[0] || st.batch || st.huid || '',
-      expiry: st.expiry || ''
-    });
-  });
-
-  recordPurchaseBill({
-    vendor: {
-      name: header.vendor_name || 'Unknown Supplier',
-      gstin: header.supplier_gstin || '',
-      stateCode: (header.supplier_gstin || '').slice(0, 2)
-    },
-    billNo: header.invoice_number || '',
-    items: purchaseLines,
-    source: 'ai_ocr'
-  });
-
-  persistState();
-  APP_STATE.aiStagingItems = [];
-  APP_STATE.aiBill = null;
-  setDisplay('aiStagingSection', 'none');
-  closeInwardModal();
-  renderCatalog();
-  renderAlertCentre();
-  showSaasToast(`${purchaseLines.length} item(s) merged into stock and the supplier bill recorded.`, 4500);
-}
-
-/* commitSingleAiItem / commitAllAiItems removed — superseded by
-   commitAiBill(), which merges the whole reviewed bill atomically and
-   records the supplier invoice behind it. */
-
 
 /* ==========================================================================
    DYNAMIC IDENTIFIER MODAL (ELECTRONICS / PHARMA / JEWELRY)
@@ -2576,7 +1575,7 @@ function renderCart() {
 
     tbody.innerHTML += `
       <tr>
-        <td><strong>${esc(it.name)}</strong><br><small style="color:var(--text-muted);">${it.assignedIdentifier ? 'ID: ' + it.assignedIdentifier : 'Untracked'} • ${it.gst}% GST</small></td>
+        <td><strong>${esc(it.name)}</strong><br><small style="color:var(--text-muted);">${it.assignedIdentifier ? 'ID: ' + esc(it.assignedIdentifier) : 'Untracked'} • ${it.gst}% GST</small></td>
         <td>${it.qty}</td>
         <td>₹${it.price.toFixed(2)}</td>
         <td><strong>₹${it.totalAmount.toFixed(2)}</strong></td>
@@ -2663,12 +1662,12 @@ async function syncInvoiceToCloud(invoice) {
   const shopId = APP_STATE.tenantProfile.shopId;
 
   try {
-    const { data, error } = await SB.saveSale(shopId, invoice);
+    const { data, error, errorCode } = await SB.saveSale(shopId, invoice);
 
     // A duplicate idempotency_key means this exact sale is already committed
     // (a retry landed twice). That's success, not failure — re-queuing it
     // would loop forever.
-    if (isFatalSyncError(error)) throw new Error(error);
+    if (isFatalSyncError(error, errorCode)) throw new Error(error);
 
     // Keep the server-assigned row id so returns can be raised against this
     // invoice without a round-trip to look it up.
@@ -2678,6 +1677,7 @@ async function syncInvoiceToCloud(invoice) {
       if (local) local.cloudId = data.sale_id;
       persistState();
     }
+    reportRpcSkipWarnings(data);
     updateSyncIndicator();
   } catch (err) {
     console.warn('Cloud sync failed, queued for retry:', err.message);
@@ -2877,10 +1877,8 @@ function saveAlertSettings() {
    other's balance. Vendors already existed in Supabase (migration 0007)
    but were never fetched into APP_STATE — invisible data until this.
    ========================================================================== */
-APP_STATE.vendors = APP_STATE.vendors || [];
-APP_STATE.khataTab = 'customers';
-APP_STATE.khataSearch = '';
-APP_STATE.khataFilter = 'all';
+// defaults moved to initAppStateDefaults() — see the comment near
+// persistState() for why.
 
 function setKhataTab(tab) {
   APP_STATE.khataTab = tab;
@@ -3301,8 +2299,8 @@ function iapOpenCancel() {
    the rate stamped on each line at the time of sale — never at today's
    rate, which would produce a credit that doesn't match what was charged.
    ========================================================================== */
-APP_STATE.returns = APP_STATE.returns || [];
-APP_STATE.returnDraft = null;
+// defaults moved to initAppStateDefaults() — see the comment near
+// persistState() for why.
 
 function openReturnModal(invoiceNo) {
   const sale = APP_STATE.sales.find(s => s.invoiceNo === invoiceNo);
@@ -3472,7 +2470,7 @@ async function submitReturn() {
   // how a sale behaves; the cloud call self-queues on failure.
   applyReturnLocally(ret, restock);
   APP_STATE.cnCounter = (APP_STATE.cnCounter || 1) + 1;
-  localStorage.setItem('bn_cn_seq', String(APP_STATE.cnCounter));
+  persistMeta('cnCounter', APP_STATE.cnCounter);
   persistState();
 
   // Same offline-first contract as a sale: never block the counter on
@@ -3480,12 +2478,13 @@ async function submitReturn() {
   ret.cloudSaleId = d.sale.cloudId || null;
 
   if (APP_STATE.cloudSession && navigator.onLine && ret.cloudSaleId) {
-    const { error } = await SB.processReturn(APP_STATE.tenantProfile.shopId, ret.cloudSaleId, ret);
-    if (isFatalSyncError(error)) {
+    const { data, error, errorCode } = await SB.processReturn(APP_STATE.tenantProfile.shopId, ret.cloudSaleId, ret);
+    if (isFatalSyncError(error, errorCode)) {
       SyncEngine.enqueue(ret, 'return');
       showSaasToast(`Credit note ${esc(creditNoteNo)} saved locally — will sync when possible.`, 4500);
     } else {
       showSaasToast(`Credit note ${esc(creditNoteNo)} created. Stock ${restock ? 'restored' : 'not restored (damaged)'}.`, 4000);
+      reportRpcSkipWarnings(data);
     }
   } else {
     // No session, offline, or the parent invoice hasn't synced yet — queue it.
@@ -5008,7 +4007,9 @@ function setTrendRange(days, el) {
    a virtual-list library.
    ========================================================================== */
 const PAGE_SIZE = 60;
-APP_STATE.catalogPage = 1;
+// initial APP_STATE.catalogPage = 1 moved to initAppStateDefaults()
+// (it calls resetCatalogPaging(), defined next) — see the comment near
+// persistState() for why.
 
 function resetCatalogPaging() { APP_STATE.catalogPage = 1; }
 
@@ -5424,7 +4425,14 @@ window.showUpdateBanner = showUpdateBanner;
 window.dismissUpdateBanner = dismissUpdateBanner;
 window.applyAppUpdate = applyAppUpdate;
 
-window.addEventListener('DOMContentLoaded', () => {
+window.addEventListener('DOMContentLoaded', async () => {
+  // Everything below reads APP_STATE — must not run until bootApp()'s
+  // IndexedDB load has actually resolved. This await is the entire point
+  // of the Phase 6 cutover's boot-sequence change (docs/PHASE6_CUTOVER_PLAN.md
+  // §3): the old localStorage-based load was synchronous, so this ordering
+  // was implicit; IndexedDB has no synchronous API, so it's explicit now.
+  await bootApp();
+
   populateStateDropdowns();
   loadPrinterAndGstSettingsIntoDOM();
   applyShopLogo();

@@ -1,0 +1,103 @@
+# BILLNAW ERP/POS — Security Report
+
+Date: 2026-09-15 (Phase 1 baseline) — extended below with Phase 2–4 verification.
+Basis: `docs/AUDIT_REPORT.md` findings, read-only follow-up. No code changed to produce this report.
+
+---
+
+## 0. Phase 2–4 Verification (new)
+
+- **F1 (duplicate stale edge function) — RESOLVED.** Verified this pass: `supabase/functions/` now contains only `ai-invoice-parse/`. `supabase/functions/index.ts` no longer exists in the working tree. *(This audit did not check the Supabase Dashboard to confirm nothing was ever deployed under that old function; that live-side confirmation from the original F1 recommendation was never explicitly checked off in the git history available here — treat as very likely resolved, not certainly reconfirmed live.)*
+- **F2 (XSS coverage gap) — UNCHANGED, NOT STARTED.** `innerHTML`/`outerHTML` call-site count is still exactly 99 (81 in app.js + 6 in customers.js + 5 in settings.js + 7 in purchases.js — the split moved code, didn't add or remove sites). Still only 3 spots have regression coverage. Phase 2–4 correctly did not attempt to fix this opportunistically during a structural-only migration phase — bundling a security fix into a "verbatim relocation" commit would have made both harder to review. This remains open, unstarted work.
+- **F3 (no rate limiting on ai-invoice-parse) — UNCHANGED, NOT STARTED.**
+- **F4 (brittle idempotency string-matching) — UNCHANGED, NOT STARTED.**
+- **F5 (silent partial-row skip in atomic RPCs) — UNCHANGED, NOT STARTED.** Correctly untouched — this is financial-RPC surface and Phase 2–4 was scoped to frontend structure only.
+- **New observation**: the `purchases.js` extraction (Phase 4, highest-stakes slice per its own header comment) calls the same `create_purchase_atomic`/stock-decrement RPCs as before, with the same arguments — verified by reading the file; no new call sites, no new parameters, no new client-side validation added or removed. This is a genuinely verbatim move on the RPC-calling surface, which is the correct thing to confirm before trusting the "no logic changed" claim in its header comment.
+- **New observation**: `npm ci` / `npm test` / `tsc --noEmit` were run to verify build integrity for this report. None of these commands write to Supabase, touch RLS, or modify source files — consistent with an audit-only pass.
+
+## 1. Executive Summary
+
+The database/RLS layer is sound: every tenant table is scoped and enforced server-side, role-based financial redaction happens in Postgres functions rather than the client, and the atomic invoice/purchase/return RPCs are genuinely idempotent. The XSS coverage gap (F2) has been fully audited and its one real finding fixed — see below. No rate limiting on a paid third-party API call remains open (F3). The one previously-open MEDIUM finding involving live infrastructure (the duplicate edge function) is resolved. §5 records a live incident, found and fixed the same day, involving dashboard-drifted RLS policies on `shops` — not a code-review finding, but a live one, discovered by actually running RUNBOOK TEST 12 rather than reviewing it statically. None of the remaining findings require weakening RLS, touching production data, or changing financial logic to fix.
+
+## 2. Findings by Severity
+
+### MEDIUM
+
+**~~F1 — Duplicate stale edge function~~ — RESOLVED** (see §0). No action required; carried here for audit-trail continuity only.
+
+**F2 — XSS coverage gap** *(audited and fixed, 2026-09-15 — see `docs/XSS_AUDIT.md`)*
+- Full audit performed per the fix plan below: all 85 actual interpolation sites (not 99 — that count included non-assignment mentions) across `app.js`, `customers.js`, `settings.js`, `purchases.js` individually traced and classified. Result: 84 were already correctly escaped or provably safe (numeric/UUID/DB-constrained fields, machine-generated text, or escaped downstream of assembly). **One real, live, exploitable gap found and fixed**: `renderCart()` rendered a cashier-typed serial/IMEI/HUID/batch field (`assignedIdentifier`) unescaped on the POS cart — the single most-used screen in the app — while every other render path for the same field (return modal, printed invoice, audit trail) was already correctly escaped. Fixed by wrapping in `esc()`, matching the existing pattern; regression test added to `tests/run-tests.js` (source-extracts `renderCart()` and asserts the `esc()` call is present, so removing it again fails the suite). 41/41 tests passing.
+- One residual low-priority item, not fixed: `customers.js`'s credit-note-number list is unescaped but server-sequenced (not free text) — see `docs/XSS_AUDIT.md` for detail.
+- **Not resolved forever**: this was a manual audit, not a lint rule — nothing stops a *new* unescaped `innerHTML` site from being added later. No ESLint is currently configured in this project; adding one with a rule against raw template-literal interpolation into `.innerHTML` would close that process gap, flagged as a future recommendation, not urgent.
+
+### LOW
+
+**F3 — No rate limiting on `ai-invoice-parse`** *(fixed, 2026-09-15 — not yet deployed live)*
+- `supabase/migrations/0013_ai_parse_rate_limit.sql` adds `ai_parse_rate_limit` (one row per shop per hour, RLS enabled with zero client-facing policies — server-internal only) and `check_ai_rate_limit(p_shop_id, p_limit_per_hour default 30)`, a `SECURITY DEFINER` RPC that atomically increments the current hour's counter (`INSERT ... ON CONFLICT ... RETURNING`, safe under concurrent requests from the same shop) and reports whether the shop is over quota.
+- `supabase/functions/ai-invoice-parse/index.ts` calls this RPC right after the existing auth/role/shop-status checks and before the (billed) Gemini call — a shop over quota never reaches Gemini at all. Returns `429` with a message naming the current count, limit, and when the hour-bucket resets. **Fails open, not closed**: if the rate-limit check itself errors (e.g. the migration hasn't been applied yet), the request proceeds and the error is only logged server-side — a broken quota check must never be able to take down legitimate bill-scanning.
+- Per-shop (not per-user), matching how every other boundary in this function is scoped (cashier restriction, shop-active check). 30 requests/hour is a starting default, not empirically tuned — adjustable via the RPC's second parameter without a new migration if it proves too tight or too loose in practice.
+- **Two-part deployment, not automatic like a SQL-only fix**: this needs (1) `0013_ai_parse_rate_limit.sql` run in the SQL editor, and (2) `supabase functions deploy ai-invoice-parse` to actually redeploy the edge function's updated code — SQL migrations apply directly, edge function code does not. Neither has been done live as of this commit; both require Supabase CLI/dashboard access this session doesn't have. **Do not consider F3 resolved until both steps are confirmed done and a live test is run** (call the function >30 times in an hour from one shop, confirm the 31st returns 429) — this fix has not had the same live-verification TEST-12-style treatment `0010`/`0011`/`0012` got.
+- No automated test added — this is Deno edge-function code, outside the Node test suite's reach entirely (same pre-existing gap the audit already tracks: "no automated test touches Supabase, RLS, or the edge functions").
+
+**F4 — Brittle idempotency string-matching in offline sync** *(fixed, 2026-09-15)*
+- `isFatalSyncError()` now checks the Postgres SQLSTATE (`errorCode`) when available, preferring `errorCode !== '23505'` over string-matching `"duplicate key"` in the message. The code was validated against the actual error shape before changing, per the original recommendation: `SB.saveSale`/`SB.savePurchase`/`SB.processReturn` (`supabaseClient.js` and its typed mirror) previously discarded `error?.code` entirely, keeping only `error?.message` — the fix adds `errorCode: error?.code` to all three, and updates every call site (`flushSyncQueue`, `syncInvoiceToCloud`, the return-processing path, and `purchases.js`'s inline save) to pass it through.
+- The old string-match is kept as a fallback for when no code is available (e.g. a thrown JS exception with no Postgres error shape), not removed — this is additive, not a behavior change for that path.
+- **Side effect caught in the same pass**: while adding a regression test for this fix, found a latent bug in `tests/extraction-parity.js` (written earlier the same day, during the Phase 5 work) — its brace-matcher grabbed a destructured parameter's `{` instead of the real function body's for `recordPurchaseBill`, so that one check had been silently comparing the wrong ~90 characters since it was written, passing regardless of the function's real content. Fixed the matcher (skip the parameter list via paren-matching first, matching the same fix already applied to `tests/supabase-parity.js`'s `extractMethodBody`) and excluded `recordPurchaseBill` from the frozen-verbatim list with a note, since it now carries this intentional change.
+
+**F5 — Silent partial-row skip in atomic RPCs** *(fixed and live-verified, 2026-09-15)*
+- `supabase/migrations/0014_atomic_rpc_skip_warnings.sql` adds a `warnings text[]` to all three RPCs (`create_invoice_atomic`, `create_purchase_atomic`, `process_sales_return_atomic` — the live versions, i.e. the `0009`/`0005` redefinitions, not the superseded `0003`/`0007` originals), returned in the response as `warnings`. **The skip behavior itself is unchanged** — a hard failure on one malformed line among many would be worse for offline resilience than proceeding with the rest, per the original design. This only makes the skip visible.
+- **Verified, not just reviewed**: `tests/rpc-warnings-parity.js` strips every warning-related addition back out of the new migration's function bodies and requires the result to be byte-identical (whitespace-normalized) to the live `0009`/`0005` definitions — confirming nothing else changed in a 130+ line hand-copied function body. This is a static/textual check; it cannot verify the SQL actually executes correctly (no DB connection from this session).
+- **Client wired up**: `app.js` gained `reportRpcSkipWarnings(data)`, called after every successful (non-replayed) `saveSale`/`savePurchase`/`processReturn` across all 4 call sites (`syncInvoiceToCloud`, the offline-queue flush loop, `submitReturn`, and `purchases.js`'s inline save) — a non-empty `warnings` array now surfaces as a toast naming the first skipped line, not silently disappearing into `console.warn` only.
+- **Live-verified, 2026-09-15**: migration applied, then `test-rpc-warnings-live.mjs` run against it — created a real inventory item (stock 10), called `create_invoice_atomic` with one valid line (qty 2) and one deliberately malformed line (no `id`). Result: valid line's stock correctly decremented (10 → 8), the malformed line did not fail the transaction, and the response's `warnings` array named it exactly (`Line "Malformed Line (no id)" was skipped (missing item or invalid quantity) — stock was not adjusted for this line.`). This confirms both halves of the fix: the skip behavior is unchanged (offline resilience preserved) and the skip is now visible (the original finding's actual complaint).
+- Only `create_invoice_atomic` was exercised live — `create_purchase_atomic` and `process_sales_return_atomic` share the identical pattern (verified by the static parity test above) but were not independently live-tested. Low risk given the shared code shape, but noted rather than silently assumed.
+
+### INFORMATIONAL (no action required)
+
+- Hardcoded Supabase URL/anon key in `supabaseClient.js` — correct by design.
+- `subscription_plans`'s `USING (true)` RLS policy — deliberate public read-only pricing catalogue.
+- No leaked service-role key, Gemini key, or other secret found anywhere in the repository, including the new `src/`, `docs/`, `vite.config.mjs`, `package.json`/`package-lock.json` added in Phase 2–4 (re-verified this pass by grep for `service_role`, `sk-`, `AIza`, and similar patterns across the full tree — no hits besides comments/placeholders).
+
+## 3. Tenant Isolation Verification
+
+Static verification (unchanged since Phase 1): every tenant table (`items`, `customers`, `sales`, `ai_purchase_staging`, `sales_returns`, `vendors`, `purchases`, `vendor_divisions`) has `shop_id` + RLS with the `my_shop_id()`/`shop_is_active()` pattern, no bypass policy found. Phase 2–4 made zero changes to any `.sql` file — this conclusion is unaffected by the structural JS work.
+
+**Update, 2026-09-15**: TEST 12 has now been run live — see §6 below. It did not confirm isolation on first run; it found a real, live cross-tenant leak on `shops`, now fixed and re-verified. The other tenant tables (`items`, `customers`) checked clean both before and after the fix — the leak was isolated to `shops`'s dashboard-drifted policies, not the migrated pattern generally.
+
+## 4. Secrets Policy Compliance
+
+Compliant, re-verified this pass across the full current tree (including all files added since Phase 1). No service-role key, Gemini key, JWT secret, or database password found in any tracked file.
+
+## 5. Live Incident — Confirmed Cross-Tenant Leak, Found and Fixed 2026-09-15
+
+Running RUNBOOK.md TEST 12 live against the project's dev Supabase instance (per the user's explicit go-ahead, using only the public anon key — the same access level any real client has) surfaced a **confirmed, live cross-tenant data leak on `shops`**, independent of and beyond anything the static Phase 1/2 audits could detect from source review alone.
+
+**What was found**: the live database had two RLS policies on `shops` that do not exist in any file under `supabase/migrations/` — dashboard-added drift, exactly the risk `docs/AUDIT_REPORT.md` and this report's Phase 1 baseline both flagged as plausible but unverified:
+- `"Allow authenticated selects"` (SELECT, to `authenticated`) — `using (true)`. Unconditional. Confirmed live: a brand-new authenticated user with zero profile rows could read every shop's row via the anon-key REST API, including `phone`, `address`, `gstin`, `bank_name`, `bank_acc`, `bank_ifsc`, and `upi_id` — every tenant's banking details exposed to every other tenant.
+- `"shops_select_authenticated"` (SELECT, to `public`) — correctly scoped to the caller's own shop, but missing the `status = 'active'` check present in the migrated `shops_select` policy, which would have let a revoked shop's own owner keep reading it (bypassing the TEST 12 step 4/5 lockout check independent of the leak above).
+
+Postgres OR's multiple permissive policies of the same command together, so the correctly-written `shops_select` (from `0001_init.sql`) was present the entire time and made no difference — the table was only as strict as its loosest permissive policy.
+
+**Fix, `supabase/migrations/0010_fix_shops_rls_leak.sql`**: drops both undocumented policies, leaving `shops_select` as the sole SELECT policy on `shops`. Verified live by re-running the isolation check after the drop: a second tenant's token returned zero rows from `shops`, `items`, and `customers` belonging to the first (previously it returned an unrelated real shop's name).
+
+**Regression this exposed, and its fix**: removing the leaky policy broke real shop signup. `signUpShop()`/`createShopForCurrentUser()` (`supabaseClient.js`) created a shop via `.insert(...).select().single()` — Postgres requires an `INSERT ... RETURNING` row to satisfy the table's SELECT policy, not just the INSERT policy's `WITH CHECK`, and a brand-new user has no profile yet at the moment their shop is inserted, so `shops_select`'s `id = my_shop_id()` fails for their own row. The leaky policy had been silently the only reason this worked. This was compounded by a second, independent, pre-existing bug: the shop insert and profile insert were two separate client calls with no atomicity — a failure between them left an orphaned, ownerless shop, the exact class of bug `create_invoice_atomic`/`create_purchase_atomic`/`process_sales_return_atomic` exist to prevent elsewhere, never applied to signup itself.
+
+**Fix, `supabase/migrations/0011_atomic_shop_signup.sql`**: a new `SECURITY DEFINER` RPC, `create_shop_and_owner(p_shop, p_owner_name)`, creates the shop and owner profile atomically server-side (rejecting a caller who already has a profile), returning the shop row. `signUpShop()` and `createShopForCurrentUser()` (both `supabaseClient.js` and its typed mirror `src/services/supabase/index.ts`, kept in lockstep and re-verified against `tests/supabase-parity.js`) now call this RPC instead of two raw inserts. Verified live end-to-end: a fresh signup, RPC call, and read-back of both the created shop and profile by the new owner all succeeded.
+
+**Residual, deliberately not fixed in this pass**: `shops` still carries two INSERT policies (`Allow authenticated inserts`, `shops_insert_authenticated`, both effectively `with check (true)`/`auth.uid() is not null`) that predate the RPC and are no longer the only way to create a shop row. Nothing currently exploits this beyond what was already true (any authenticated user could always insert a shop row), but now that `create_shop_and_owner` is the intended single path, these are candidates for removal in a follow-up hardening migration — not bundled here to keep this fix minimal and reviewable. `profiles`' two policies (`profiles_select`, `profiles_update_self`) were checked live and confirmed to match the migrations exactly — no drift found there.
+
+**F1 status correction**: the original F1 finding (stale duplicate edge function) remains resolved as recorded in §0. This new finding is tracked separately as it was discovered live, not via source review, and root-caused to dashboard drift rather than anything in the JS/TS codebase.
+
+**Follow-up, same day**: per §6 item 4, live-checked every other tenant table's actual policies via `select * from pg_policies where tablename in (...)` — cheaper and more thorough than repeating the Dashboard click-through per table. Result: **`items`, `customers`, `sales`, `ai_purchase_staging`, `sales_returns`, `vendors`, `purchases`, `vendor_divisions` all have exactly one policy each, and every one is a byte-for-byte match to its migration file** (`0001`/`0005`/`0007`/`0009`). No dashboard drift, no `using (true)`, no duplicates found on any of them. The `shops` leak was isolated to that one table, not a systemic pattern — `shops` is also the only table in the schema with two *separate* SELECT/UPDATE policies rather than one `for all` policy (the extra surface where the drift crept in), which is a plausible reason it was singled out rather than a coincidence. Tenant isolation across all 10 RLS-protected tables is now live-verified, not just statically reviewed, as of 2026-09-15.
+
+## 6. Recommended Security Work Order (updated)
+
+1. ~~Confirm and resolve F1~~ — **Done.**
+2. ~~Run RUNBOOK TEST 12 live~~ — **Done.** Found and fixed a real leak (§5) — not a clean pass, but the item is closed.
+3. ~~Remove the two now-redundant `shops` INSERT policies~~ — **Done**, same day (`0012_drop_redundant_shops_insert_policies.sql`). Confirmed via `grep -rn "from('shops').insert"` that no code path used raw inserts anymore, dropped both live, and re-ran `test-signup-rpc.mjs` afterward to confirm signup still works via `create_shop_and_owner` (which runs `SECURITY DEFINER` and never depended on these policies).
+4. ~~Audit every other tenant table's live policy list against its migration file~~ — **Done, same day.** All 8 remaining tenant tables (`items`, `customers`, `sales`, `sales_returns`, `vendors`, `purchases`, `vendor_divisions`, `ai_purchase_staging`) checked live via `pg_policies` and confirmed to match their migration files exactly — no drift found. The `shops` leak was isolated, not systemic; see §5 follow-up.
+5. ~~Begin F2 (XSS audit-and-patch)~~ — **Done**, same day. See `docs/XSS_AUDIT.md`: one real finding (POS cart), fixed and test-covered.
+6. Add a parity test for `settings.js`/`customers.js`/`purchases.js` (see `docs/AUDIT_REPORT.md` §9 gap) before any further `app.js` extraction.
+7. ~~F4~~ — **Done**, same day. ~~F3~~ — **Code written, same day, not yet deployed live** — requires running `0013_ai_parse_rate_limit.sql` and redeploying the edge function (`supabase functions deploy ai-invoice-parse`), neither of which this session can do. Treat as open until both are confirmed and live-tested.
+8. ~~F5~~ — **Done and live-verified, same day.** See §2 above.
+
+None of these findings block continuing the structural migration (further Phase 4 work) described in `docs/MIGRATION_PLAN.md`.
