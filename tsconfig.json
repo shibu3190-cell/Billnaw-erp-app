@@ -23,6 +23,7 @@
     "inventory.js",
     "reports.js",
     "auth.js",
+    "pos.js",
     "supabaseClient.js",
     "app.js",
     "src/**/*.ts"
