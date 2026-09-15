@@ -17,6 +17,7 @@
     "exportEngine.js",
     "alertEngine.js",
     "printerEngine.js",
+    "settings.js",
     "supabaseClient.js",
     "app.js",
     "src/**/*.ts"
