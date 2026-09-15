@@ -24,6 +24,7 @@
     "reports.js",
     "auth.js",
     "pos.js",
+    "checkout.js",
     "supabaseClient.js",
     "app.js",
     "src/**/*.ts"
