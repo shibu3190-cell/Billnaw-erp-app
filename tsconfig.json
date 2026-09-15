@@ -29,6 +29,7 @@
     "invoice.js",
     "scanner.js",
     "misc.js",
+    "gstsettings.js",
     "supabaseClient.js",
     "app.js",
     "src/**/*.ts"
