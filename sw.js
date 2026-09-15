@@ -2,7 +2,7 @@
    BILLNAW SERVICE WORKER
    Bump CACHE_NAME on every deploy — this is what triggers the update flow.
    ========================================================================== */
-const CACHE_NAME = 'billnaw-v28.0-reports-module-extraction';
+const CACHE_NAME = 'billnaw-v29.0-reports-module-extraction-part2';
 const STATIC_ASSETS = [
   './',
   './index.html',
