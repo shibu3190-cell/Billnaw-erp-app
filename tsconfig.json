@@ -17,7 +17,11 @@
     "exportEngine.js",
     "alertEngine.js",
     "printerEngine.js",
+    "settings.js",
+    "customers.js",
+    "purchases.js",
     "supabaseClient.js",
-    "app.js"
+    "app.js",
+    "src/**/*.ts"
   ]
 }

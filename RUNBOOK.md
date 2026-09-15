@@ -434,11 +434,11 @@ Sign in as Priya on the phone while Abhijit is signed in on the PC. Ring up a sa
 # Known limits (be aware before going live)
 
 1. **Not a GSTN e-filing integration.** GSTR-1 gives you correct HSN-wise numbers to read or re-key. It does not generate the portal's JSON or call any government API. E-invoice (IRN) and e-way bill generation are **not** built.
-2. **The 4-digit PIN is a shift-lock, not security.** It's stored locally in plain text. The real boundary is the Supabase session + RLS. Anyone with devtools access to the device can read that PIN.
+2. ~~The 4-digit PIN is a shift-lock, not security.~~ **Resolved:** there is no PIN-based login anymore. It was removed because a PIN stored in localStorage was readable/editable by anyone with devtools and protected nothing. Login is Supabase session only (email/phone OTP or Google OAuth). The unrelated `drawerPin` setting in Settings is a cash-drawer-kick code for POS hardware, not an auth mechanism.
 3. **Phone OTP needs a paid SMS provider** before it does anything.
 4. **Purchase/vendor bill history is local-only** — not yet synced to Supabase.
 5. **Reports read from local state**, not a live cloud query. Accurate on the device that made the sales; a second device needs a refresh to see them.
-6. **Invoice-save and stock-decrement are two separate calls**, not one transaction. A connection drop between them can leave stock un-decremented for a saved invoice. Rare, but real.
+6. ~~Invoice-save and stock-decrement are two separate calls, not one transaction.~~ **Resolved:** both now go through the `create_invoice_atomic` Postgres RPC (migration `0003_atomic_invoice.sql`, extended in `0009`) in a single transaction, including idempotent replay on retry. A connection drop no longer leaves stock un-decremented for a saved invoice.
 
 ---
 
