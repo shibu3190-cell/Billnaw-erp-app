@@ -18,6 +18,7 @@
     "alertEngine.js",
     "printerEngine.js",
     "supabaseClient.js",
-    "app.js"
+    "app.js",
+    "src/**/*.ts"
   ]
 }
