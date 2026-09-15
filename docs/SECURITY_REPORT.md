@@ -36,9 +36,10 @@ The database/RLS layer is sound: every tenant table is scoped and enforced serve
 - Any authenticated non-cashier, active-shop user can call the Gemini-backed OCR endpoint with no app-level quota. Cost/DoS risk against the Gemini bill, not a data-security issue.
 - **Fix**: add a per-shop or per-user request-count check as a new additive migration (`0010_...`).
 
-**F4 — Brittle idempotency string-matching in offline sync** *(open, unchanged)*
-- `isFatalSyncError()` (still in `app.js`) regex-matches the literal string `"duplicate key"` in Postgres error text.
-- **Fix**: match SQLSTATE `23505` if exposed through the Supabase client error shape, rather than message text. Validate against the actual error object before changing.
+**F4 — Brittle idempotency string-matching in offline sync** *(fixed, 2026-09-15)*
+- `isFatalSyncError()` now checks the Postgres SQLSTATE (`errorCode`) when available, preferring `errorCode !== '23505'` over string-matching `"duplicate key"` in the message. The code was validated against the actual error shape before changing, per the original recommendation: `SB.saveSale`/`SB.savePurchase`/`SB.processReturn` (`supabaseClient.js` and its typed mirror) previously discarded `error?.code` entirely, keeping only `error?.message` — the fix adds `errorCode: error?.code` to all three, and updates every call site (`flushSyncQueue`, `syncInvoiceToCloud`, the return-processing path, and `purchases.js`'s inline save) to pass it through.
+- The old string-match is kept as a fallback for when no code is available (e.g. a thrown JS exception with no Postgres error shape), not removed — this is additive, not a behavior change for that path.
+- **Side effect caught in the same pass**: while adding a regression test for this fix, found a latent bug in `tests/extraction-parity.js` (written earlier the same day, during the Phase 5 work) — its brace-matcher grabbed a destructured parameter's `{` instead of the real function body's for `recordPurchaseBill`, so that one check had been silently comparing the wrong ~90 characters since it was written, passing regardless of the function's real content. Fixed the matcher (skip the parameter list via paren-matching first, matching the same fix already applied to `tests/supabase-parity.js`'s `extractMethodBody`) and excluded `recordPurchaseBill` from the frozen-verbatim list with a note, since it now carries this intentional change.
 
 **F5 — Silent partial-row skip in atomic RPCs** *(open, unchanged)*
 - `create_invoice_atomic`/`create_purchase_atomic`/`process_sales_return_atomic` use `exception when others then continue` on malformed line items instead of surfacing an error.
@@ -90,7 +91,7 @@ Postgres OR's multiple permissive policies of the same command together, so the 
 4. ~~Audit every other tenant table's live policy list against its migration file~~ — **Done, same day.** All 8 remaining tenant tables (`items`, `customers`, `sales`, `sales_returns`, `vendors`, `purchases`, `vendor_divisions`, `ai_purchase_staging`) checked live via `pg_policies` and confirmed to match their migration files exactly — no drift found. The `shops` leak was isolated, not systemic; see §5 follow-up.
 5. ~~Begin F2 (XSS audit-and-patch)~~ — **Done**, same day. See `docs/XSS_AUDIT.md`: one real finding (POS cart), fixed and test-covered.
 6. Add a parity test for `settings.js`/`customers.js`/`purchases.js` (see `docs/AUDIT_REPORT.md` §9 gap) before any further `app.js` extraction.
-7. F3 and F4 — low-risk additive changes, can be scheduled alongside further build tooling work.
+7. ~~F4~~ — **Done**, same day (see §2 above). F3 remains — low-risk additive change, can be scheduled alongside further build tooling work.
 8. F5 — hold until financial-logic-change process (before/after tests, Safety Gate) is set up; do not rush a financial RPC change ahead of that scaffolding.
 
 None of these findings block continuing the structural migration (further Phase 4 work) described in `docs/MIGRATION_PLAN.md`.

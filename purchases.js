@@ -306,8 +306,8 @@ function recordPurchaseBill({ vendor, billNo, divisionName = '', items, source =
   persistState();
 
   if (APP_STATE.cloudSession && navigator.onLine) {
-    SB.savePurchase(APP_STATE.tenantProfile.shopId, purchase).then(({ error }) => {
-      if (isFatalSyncError(error)) SyncEngine.enqueue(purchase, 'purchase');
+    SB.savePurchase(APP_STATE.tenantProfile.shopId, purchase).then(({ error, errorCode }) => {
+      if (isFatalSyncError(error, errorCode)) SyncEngine.enqueue(purchase, 'purchase');
       updateSyncIndicator();
       APP_STATE.vendorsLoaded = false; // force a refetch so the new/updated division shows up next time Khata → Vendors opens
     });

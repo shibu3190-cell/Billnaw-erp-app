@@ -304,6 +304,22 @@ test('duplicate-key errors are treated as success, not retried forever', () => {
   eq(isFatal(undefined), false);
 });
 
+test('F4 fix: SQLSTATE 23505 (unique_violation) is preferred over string-matching the message', () => {
+  // The atomic RPCs' own idempotency check (SELECT-then-insert) means a
+  // normal retry never hits a real Postgres error at all — it returns
+  // {replayed: true} with no error. A genuine 23505 here only happens in
+  // the race between two concurrent calls with the same idempotency_key,
+  // and is still "already synced," not a failure.
+  const isFatal = helpers.isFatalSyncError;
+  eq(isFatal('duplicate key value violates unique constraint', '23505'), false, 'a real 23505 must not be treated as fatal:');
+  eq(isFatal('some other constraint failed', '23514'), true, 'a non-23505 Postgres error must still be treated as fatal even if the message happens to contain unrelated text:');
+  eq(isFatal('duplicate key value violates unique constraint', '23514'), true, 'the code must win over the message text when both are present — a locale/wording change to the message must not silently flip this:');
+  // No code available (e.g. a thrown JS exception with no Postgres error
+  // shape) — falls back to the old string-match, unchanged behavior.
+  eq(isFatal('duplicate key value violates unique constraint', undefined), false, 'falls back to string-match when no code is available:');
+  eq(isFatal('network timeout', undefined), true);
+});
+
 test('legacy flat queue entries still drain after an app update', () => {
   const legacy = { idempotency_key: 'old1', invoiceNo: 'INV-1' };  // pre-envelope format
   const kind = legacy.kind || 'sale';

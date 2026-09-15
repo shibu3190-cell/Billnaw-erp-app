@@ -278,7 +278,11 @@ export function createSB(supabaseClient: any, supabaseUrl: string) {
           items: invoice.items
         }
       });
-      return { data, error: error?.message };
+      // errorCode carries the Postgres SQLSTATE (e.g. '23505' unique_violation)
+      // when the Supabase client exposes one, alongside the existing message
+      // string — isFatalSyncError() (app.js) prefers this over string-matching
+      // "duplicate key" in the message, which is fragile against wording changes.
+      return { data, error: error?.message, errorCode: error?.code };
     },
 
     async nextInvoiceNumber(shopId: string, prefix = 'INV') {
@@ -324,7 +328,7 @@ export function createSB(supabaseClient: any, supabaseUrl: string) {
           items: purchase.items || []
         }
       });
-      return { data, error: error?.message };
+      return { data, error: error?.message, errorCode: error?.code };
     },
 
     async fetchPurchases(shopId: string, limit = 200) {
@@ -372,7 +376,7 @@ export function createSB(supabaseClient: any, supabaseUrl: string) {
           items: ret.items
         }
       });
-      return { data, error: error?.message };
+      return { data, error: error?.message, errorCode: error?.code };
     },
 
     async fetchReturns(shopId: string, limit = 200) {

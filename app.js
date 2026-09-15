@@ -426,8 +426,22 @@ function applyRoleSecurity(role) {
 // when error is null — falsy, so it happened to work, but a predicate that
 // returns three different types is a trap for the next person who uses it
 // with === or passes it to a filter.
-function isFatalSyncError(error) {
+//
+// errorCode, when available, is the Postgres SQLSTATE from the Supabase
+// client (SB.saveSale/savePurchase/processReturn now return it alongside
+// the message — see supabaseClient.js). '23505' is unique_violation: the
+// atomic RPCs' own idempotency check (SELECT-then-insert on idempotency_key)
+// already turns a normal retry into a successful "replayed" response with
+// no error at all, so a real 23505 here only happens in the narrow race
+// between two concurrent calls with the same key — still "already synced,
+// not a failure" either way. Checking the code is precise; the regex
+// fallback below only runs when no code is available (e.g. a thrown JS
+// exception with no Postgres error shape at all, or an older cached
+// version of these SB methods during a rolling deploy) and is kept for
+// that reason, not because it's still the primary signal.
+function isFatalSyncError(error, errorCode) {
   if (!error) return false;
+  if (errorCode) return errorCode !== '23505';
   return !/duplicate key/i.test(String(error));
 }
 
@@ -489,10 +503,10 @@ const SyncEngine = {
       const kind = entry.kind || 'sale';
       const payload = entry.payload || entry;
 
-      let error = null;
+      let error = null, errorCode = null;
       try {
         if (kind === 'sale') {
-          ({ error } = await SB.saveSale(shopId, payload));
+          ({ error, errorCode } = await SB.saveSale(shopId, payload));
         } else if (kind === 'return') {
           if (!payload.cloudSaleId) {
             // The parent invoice hasn't synced yet, so there's no row to
@@ -501,16 +515,16 @@ const SyncEngine = {
             remaining.push(entry);
             continue;
           }
-          ({ error } = await SB.processReturn(shopId, payload.cloudSaleId, payload));
+          ({ error, errorCode } = await SB.processReturn(shopId, payload.cloudSaleId, payload));
         } else if (kind === 'purchase') {
-          ({ error } = await SB.savePurchase(shopId, payload));
+          ({ error, errorCode } = await SB.savePurchase(shopId, payload));
         }
       } catch (e) {
         error = e.message;
       }
 
       // A duplicate idempotency key means it already committed — success.
-      if (isFatalSyncError(error)) {
+      if (isFatalSyncError(error, errorCode)) {
         remaining.push(entry);
         console.warn(`Sync retry pending (${kind}):`, error);
       }
@@ -1554,12 +1568,12 @@ async function syncInvoiceToCloud(invoice) {
   const shopId = APP_STATE.tenantProfile.shopId;
 
   try {
-    const { data, error } = await SB.saveSale(shopId, invoice);
+    const { data, error, errorCode } = await SB.saveSale(shopId, invoice);
 
     // A duplicate idempotency_key means this exact sale is already committed
     // (a retry landed twice). That's success, not failure — re-queuing it
     // would loop forever.
-    if (isFatalSyncError(error)) throw new Error(error);
+    if (isFatalSyncError(error, errorCode)) throw new Error(error);
 
     // Keep the server-assigned row id so returns can be raised against this
     // invoice without a round-trip to look it up.
@@ -2371,8 +2385,8 @@ async function submitReturn() {
   ret.cloudSaleId = d.sale.cloudId || null;
 
   if (APP_STATE.cloudSession && navigator.onLine && ret.cloudSaleId) {
-    const { error } = await SB.processReturn(APP_STATE.tenantProfile.shopId, ret.cloudSaleId, ret);
-    if (isFatalSyncError(error)) {
+    const { error, errorCode } = await SB.processReturn(APP_STATE.tenantProfile.shopId, ret.cloudSaleId, ret);
+    if (isFatalSyncError(error, errorCode)) {
       SyncEngine.enqueue(ret, 'return');
       showSaasToast(`Credit note ${esc(creditNoteNo)} saved locally — will sync when possible.`, 4500);
     } else {

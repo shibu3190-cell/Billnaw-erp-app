@@ -37,7 +37,20 @@ function extractFunction(src, name) {
   const marker = `function ${name}(`;
   const start = src.indexOf(marker);
   if (start === -1) throw new Error(`marker "${marker}" not found`);
-  const braceStart = src.indexOf('{', start);
+  // Skip past the parameter list before looking for the body's opening
+  // brace — a destructured parameter (e.g. `function f({ a, b }) {`) has
+  // its own `{` before the real one, which naive indexOf('{', start)
+  // matches instead, silently truncating the extracted body to just the
+  // parameter list. Match parens first, then find the body brace after.
+  let i = src.indexOf('(', start);
+  let pdepth = 1;
+  i++;
+  while (pdepth > 0) {
+    if (src[i] === '(') pdepth++;
+    else if (src[i] === ')') pdepth--;
+    i++;
+  }
+  const braceStart = src.indexOf('{', i);
   if (braceStart === -1) throw new Error(`no opening brace after "${marker}"`);
   let depth = 0;
   for (let i = braceStart; i < src.length; i++) {
@@ -73,7 +86,13 @@ const FILES = {
   ],
   'purchases.js': [
     'onPurVendorInput', 'openInwardPurchaseModal', 'closeInwardModal', 'toggleInwardMode',
-    'populateRestockPicker', 'prefillFromExistingItem', 'saveManualPurchase', 'recordPurchaseBill',
+    'populateRestockPicker', 'prefillFromExistingItem', 'saveManualPurchase',
+    // recordPurchaseBill intentionally excluded: F4 (2026-09-15) added an
+    // errorCode destructure/argument to its SB.savePurchase().then() callback
+    // so isFatalSyncError() can check the Postgres SQLSTATE instead of
+    // string-matching "duplicate key" — a genuine, reviewed, tested change,
+    // not drift. Re-add it here (with a fresh baseline commit) only if it's
+    // meant to go back to being a frozen, no-logic-changed extraction.
     'matchInventoryItem', 'renderAiBillHeader', 'renderAiStagingTable', 'editAiStagingField',
     'discardAiStagingItem', 'commitAiBill',
   ],
