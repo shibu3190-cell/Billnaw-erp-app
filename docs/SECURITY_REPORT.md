@@ -80,12 +80,14 @@ Postgres OR's multiple permissive policies of the same command together, so the 
 
 **F1 status correction**: the original F1 finding (stale duplicate edge function) remains resolved as recorded in §0. This new finding is tracked separately as it was discovered live, not via source review, and root-caused to dashboard drift rather than anything in the JS/TS codebase.
 
+**Follow-up, same day**: per §6 item 4, live-checked every other tenant table's actual policies via `select * from pg_policies where tablename in (...)` — cheaper and more thorough than repeating the Dashboard click-through per table. Result: **`items`, `customers`, `sales`, `ai_purchase_staging`, `sales_returns`, `vendors`, `purchases`, `vendor_divisions` all have exactly one policy each, and every one is a byte-for-byte match to its migration file** (`0001`/`0005`/`0007`/`0009`). No dashboard drift, no `using (true)`, no duplicates found on any of them. The `shops` leak was isolated to that one table, not a systemic pattern — `shops` is also the only table in the schema with two *separate* SELECT/UPDATE policies rather than one `for all` policy (the extra surface where the drift crept in), which is a plausible reason it was singled out rather than a coincidence. Tenant isolation across all 10 RLS-protected tables is now live-verified, not just statically reviewed, as of 2026-09-15.
+
 ## 6. Recommended Security Work Order (updated)
 
 1. ~~Confirm and resolve F1~~ — **Done.**
 2. ~~Run RUNBOOK TEST 12 live~~ — **Done.** Found and fixed a real leak (§5) — not a clean pass, but the item is closed.
 3. **New, from §5**: remove the two now-redundant `shops` INSERT policies (`Allow authenticated inserts`, `shops_insert_authenticated`) now that `create_shop_and_owner` is the intended single signup path — low-risk hardening, not urgent, but tracked so it isn't forgotten.
-4. **New, from §5**: audit every other tenant table's live policy list against its migration file the same way `shops` was just checked — this incident proved dashboard drift is real, not hypothetical, and `shops` was only checked because TEST 12 happens to touch it. `items`, `customers`, `sales`, `sales_returns`, `vendors`, `purchases`, `vendor_divisions`, `ai_purchase_staging` have not had the same live-vs-migration diff performed.
+4. ~~Audit every other tenant table's live policy list against its migration file~~ — **Done, same day.** All 8 remaining tenant tables (`items`, `customers`, `sales`, `sales_returns`, `vendors`, `purchases`, `vendor_divisions`, `ai_purchase_staging`) checked live via `pg_policies` and confirmed to match their migration files exactly — no drift found. The `shops` leak was isolated, not systemic; see §5 follow-up.
 5. Begin F2 (XSS audit-and-patch) as a standalone effort across all 4 files that now contain interpolation sites (`app.js`, `customers.js`, `settings.js`, `purchases.js`) — independent of the React/TS migration.
 6. Add a parity test for `settings.js`/`customers.js`/`purchases.js` (see `docs/AUDIT_REPORT.md` §9 gap) before any further `app.js` extraction.
 7. F3 and F4 — low-risk additive changes, can be scheduled alongside further build tooling work.
