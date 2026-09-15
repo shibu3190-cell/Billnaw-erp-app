@@ -6,7 +6,7 @@
     "dev": "vite",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "test": "node tests/run-tests.js && node tests/shop-day-simulation.js && node tests/gst-parity.js && node tests/escape-parity.js && node tests/alerts-parity.js && node tests/export-parity.js && node tests/printer-parity.js && node tests/extraction-parity.js"
+    "test": "node tests/run-tests.js && node tests/shop-day-simulation.js && node tests/gst-parity.js && node tests/escape-parity.js && node tests/alerts-parity.js && node tests/export-parity.js && node tests/printer-parity.js && node tests/extraction-parity.js && node tests/supabase-parity.js"
   },
   "devDependencies": {
     "typescript": "^5.6.3",
