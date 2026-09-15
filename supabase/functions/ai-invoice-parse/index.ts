@@ -158,6 +158,24 @@ Deno.serve(async (req: Request) => {
       .from("shops").select("status").eq("id", profile.shop_id).maybeSingle();
     if (!shop || shop.status !== "active") return json({ error: "Shop access is not active" }, 403);
 
+    /* ---- 1.5. Rate limit ---- */
+    // Checked before the (expensive, billed) Gemini call, not after — the
+    // whole point is to stop the request from reaching Gemini at all once
+    // a shop is over quota. See migration 0013 for the counter design.
+    const { data: rateLimit, error: rateLimitErr } = await supabase
+      .rpc("check_ai_rate_limit", { p_shop_id: profile.shop_id });
+    if (rateLimitErr) {
+      // Fail open, not closed: a broken rate-limit check must not take
+      // down a legitimate shop's ability to scan bills. Logged for
+      // visibility, not surfaced to the caller as an error.
+      console.error("Rate limit check failed (failing open):", rateLimitErr.message);
+    } else if (rateLimit && !rateLimit.allowed) {
+      return json({
+        error: `AI parsing limit reached for this hour (${rateLimit.count}/${rateLimit.limit}). ` +
+          `Try again after ${new Date(rateLimit.window_resets_at).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}, or enter this bill manually.`,
+      }, 429);
+    }
+
     /* ---- 2. Validate input ---- */
     const body = await req.json().catch(() => null);
     if (!body?.image_base64) return json({ error: "image_base64 is required" }, 400);
