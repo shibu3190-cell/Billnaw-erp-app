@@ -25,6 +25,7 @@
     "customers.js",
     "purchases.js",
     "supabaseClient.js",
+    "auth.js",
     "app.js",
     "src/**/*.ts"
   ]

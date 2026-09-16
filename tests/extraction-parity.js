@@ -110,6 +110,28 @@ const FILES = {
     'renderKpiDeltas', 'renderDonutChart', 'renderTrendChart', 'setTrendRange',
     'exportCurrentReportCSV', 'printReportDocument',
   ],
+  'auth.js': [
+    // AuthFlow/COUNTRY_CODES are const object/array literals, not
+    // `function name(` declarations — this extractor only handles function
+    // declarations, so they aren't listed here (unlike DASH_CARD_FILTERS
+    // in reports.js above, no separate byte-identical check was added for
+    // them either; both were git-diffed by hand against the pre-extraction
+    // commit while building this list and found unchanged).
+    //
+    // applyRoleSecurity and hydrateCloudData are NOT listed here even
+    // though they sit inside/near this block in the pre-extraction app.js:
+    // both were deliberately left behind in app.js (see auth.js's header
+    // comment) rather than extracted, so there is nothing to compare.
+    'normalizePhoneNumber', 'applyAuthLockState', 'togglePasswordVisibility',
+    'initAuthGate', 'enterApp', 'showStep', 'showRequestStep', 'showRegisterStep',
+    'renderWizardDots', 'setLoginMethod', 'buildCountryList', 'toggleCountryList',
+    'pickCountry', 'onPhoneInput', 'requestOtp', 'openOtpStep', 'maskTarget',
+    'startResendTimer', 'editOtpTarget', 'resendOtp', 'clearOtpBoxes',
+    'readOtpCode', 'onOtpInput', 'onOtpKeydown', 'onOtpPaste', 'verifyOtpCode',
+    'signInWithGoogle', 'submitRegistration', 'onRegGstinInput', 'pickIndustry',
+    'finishOnboarding', 'hydrateTenantFromShop', 'setAuthBusy', 'fullSignOut',
+    'lockPOS',
+  ],
   'purchases.js': [
     'onPurVendorInput', 'openInwardPurchaseModal', 'closeInwardModal', 'toggleInwardMode',
     'populateRestockPicker', 'prefillFromExistingItem', 'saveManualPurchase',
