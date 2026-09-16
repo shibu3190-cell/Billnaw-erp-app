@@ -144,6 +144,31 @@ const FILES = {
     'matchInventoryItem', 'renderAiBillHeader', 'renderAiStagingTable', 'editAiStagingField',
     'discardAiStagingItem', 'commitAiBill',
   ],
+  'pos.js': [
+    // generateDynamicUpiQR, INDUSTRY_INVOICE_PROFILES is a const object
+    // literal (not `function name(`), so it isn't checked here — same
+    // handling as DASH_CARD_FILTERS in reports.js above.
+    'generateDynamicUpiQR', 'openCameraScanner', 'beepScanFeedback',
+    'toggleScanContinuous', 'submitManualScan', 'closeCameraScanner',
+    'handleScannedCode', 'openItemModal', 'closeModal', 'r2',
+    'commitModalItem',
+    // renderCart intentionally excluded: F2 (1563ff5, "escape
+    // assignedIdentifier in POS cart render") changed its body after the
+    // 1f56ed1 baseline — a genuine, reviewed security fix, not drift
+    // introduced by this extraction. Same precedent as
+    // recordPurchaseBill/submitReturn above.
+    'removeCart', 'setTender', 'setStep', 'jumpToStep',
+    // syncInvoiceToCloud intentionally excluded: F4 (88a5f5d, SQLSTATE-
+    // based isFatalSyncError) and F5 (b90c609, reportRpcSkipWarnings)
+    // both changed its body after the 1f56ed1 baseline — genuine,
+    // reviewed changes, not drift introduced by this extraction. Same
+    // precedent as recordPurchaseBill/submitReturn above.
+    'showAlternativesFor', 'selectAlternative', 'openInvoiceActionPopup',
+    'closeInvoiceActionPopup', 'getIapSale', 'iapDownload', 'iapPrint',
+    'iapOpenEdit', 'iapSaveEdit', 'iapOpenCancel', 'reserveInvoiceNumber',
+    'checkoutBill', 'applyIndustryInvoiceTheme', 'printA4Invoice',
+    'renderHsnTaxBreakup',
+  ],
 };
 
 for (const [file, fns] of Object.entries(FILES)) {

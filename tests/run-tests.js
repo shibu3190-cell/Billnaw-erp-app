@@ -42,20 +42,21 @@ const { TaxEngine, GST_STATE_CODES } =
 // code rather than a copy that can drift from it.
 const appSrc = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
 const alertSrc = fs.readFileSync(path.join(ROOT, 'alertEngine.js'), 'utf8');
+const posSrc = fs.readFileSync(path.join(ROOT, 'pos.js'), 'utf8');
 
 // Pulls a named block out of whichever source file currently owns it. After
-// the module extraction these helpers moved from app.js to alertEngine.js —
-// searching both means the suite keeps testing the SHIPPED code rather than
-// silently falling back to a stale copy.
+// module extractions these helpers moved from app.js to alertEngine.js /
+// pos.js — searching all three means the suite keeps testing the SHIPPED
+// code rather than silently falling back to a stale copy.
 function extract(startMarker, endMarker) {
-  for (const src of [appSrc, alertSrc]) {
+  for (const src of [appSrc, alertSrc, posSrc]) {
     const a = src.indexOf(startMarker);
     if (a === -1) continue;
     const b = src.indexOf(endMarker, a);
     if (b === -1) continue;
     return src.slice(a, b);
   }
-  throw new Error(`Could not extract ${startMarker} from app.js or alertEngine.js`);
+  throw new Error(`Could not extract ${startMarker} from app.js, alertEngine.js or pos.js`);
 }
 const helpers = {};
 new Function('TaxEngine', 'out', `
