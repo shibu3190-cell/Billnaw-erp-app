@@ -84,6 +84,11 @@ const FILES = {
     'updateStarButton', 'openCustEditModal', 'saveCustEdit', 'renderCustomer360Profile',
     'exportCustomer360',
   ],
+  'inventory.js': [
+    'renderInventoryTable', 'openEditStockModal', 'closeEditStockModal', 'saveEditedStock',
+    'deleteInventoryItemPrompt', 'resetCatalogPaging', 'loadMoreCatalog', 'renderPagerFooter',
+    'renderCatalog', 'openNewProductModal', 'closeNewProdModal', 'saveNewProduct',
+  ],
   'purchases.js': [
     'onPurVendorInput', 'openInwardPurchaseModal', 'closeInwardModal', 'toggleInwardMode',
     'populateRestockPicker', 'prefillFromExistingItem', 'saveManualPurchase',
