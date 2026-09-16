@@ -16,6 +16,7 @@
     "database.js",
     "inventory.js",
     "returns.js",
+    "reports.js",
     "gstConfig.js",
     "exportEngine.js",
     "alertEngine.js",

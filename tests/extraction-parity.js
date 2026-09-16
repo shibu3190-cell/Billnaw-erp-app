@@ -99,6 +99,17 @@ const FILES = {
     // Same precedent as recordPurchaseBill in purchases.js above.
     'applyReturnLocally',
   ],
+  'reports.js': [
+    // DASH_CARD_FILTERS is a const object, not a `function name(` — this
+    // extractor only handles function declarations, so it's checked
+    // separately (see the byte-identical check further below) rather than
+    // listed here.
+    'openReport', 'drillDashboardCard', 'renderDashDrillTable', 'closeReportDetail',
+    'renderActiveReportData', 'filterReportsCategory', 'renderDashboard',
+    'renderActivityFeed', 'renderMobileInvoiceCards', 'computeReceivablesAgeing',
+    'renderKpiDeltas', 'renderDonutChart', 'renderTrendChart', 'setTrendRange',
+    'exportCurrentReportCSV', 'printReportDocument',
+  ],
   'purchases.js': [
     'onPurVendorInput', 'openInwardPurchaseModal', 'closeInwardModal', 'toggleInwardMode',
     'populateRestockPicker', 'prefillFromExistingItem', 'saveManualPurchase',
