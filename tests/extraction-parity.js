@@ -89,6 +89,16 @@ const FILES = {
     'deleteInventoryItemPrompt', 'resetCatalogPaging', 'loadMoreCatalog', 'renderPagerFooter',
     'renderCatalog', 'openNewProductModal', 'closeNewProdModal', 'saveNewProduct',
   ],
+  'returns.js': [
+    'openReturnModal', 'closeReturnModal', 'renderReturnModal', 'updateReturnQty',
+    'computeReturnTotals', 'updateReturnTotals',
+    // submitReturn intentionally excluded: already carries F4's errorCode
+    // destructure, F5's reportRpcSkipWarnings() call, and Phase 6's
+    // persistMeta() call from earlier the same week — genuine, reviewed
+    // changes made before this extraction, not drift introduced by it.
+    // Same precedent as recordPurchaseBill in purchases.js above.
+    'applyReturnLocally',
+  ],
   'purchases.js': [
     'onPurVendorInput', 'openInwardPurchaseModal', 'closeInwardModal', 'toggleInwardMode',
     'populateRestockPicker', 'prefillFromExistingItem', 'saveManualPurchase',
