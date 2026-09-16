@@ -126,10 +126,10 @@ Since this plan was last written, the following happened, in order, all with exp
 
 ## Final Decision
 
-**SAFE TO CONTINUE**, with one new mandatory precondition before treating any other table's RLS as trustworthy: **`docs/SECURITY_REPORT.md` §6 recommends running the same live-policy-vs-migration-file diff on every other tenant table** (`items`, `customers`, `sales`, `sales_returns`, `vendors`, `purchases`, `vendor_divisions`, `ai_purchase_staging`), not just `shops`. `shops` was only checked because TEST 12 happens to exercise it — nothing ruled out the same class of drift existing elsewhere. Recommended next actions, in order:
+**SAFE TO CONTINUE.** All three follow-up actions below are now done:
 
-1. Live-diff the remaining 8 tenant tables' actual Dashboard policies against their migration files — cheap, no code change, directly informed by exactly how this incident was found.
-2. Remove the two now-redundant `shops` INSERT policies once `create_shop_and_owner` is confirmed the only signup path in use.
-3. Continue Phase 4 (`app.js` inventory/returns/reports/auth/POS extraction) or Phase 6 (local database) per your priority — both remain unstarted and are independent of the incident above.
+1. ~~Live-diff the remaining 8 tenant tables' actual Dashboard policies against their migration files~~ — **Done, 2026-09-15**, same day as the `shops` incident. `items`, `customers`, `sales`, `sales_returns`, `vendors`, `purchases`, `vendor_divisions`, `ai_purchase_staging` all checked live via `select * from pg_policies where tablename in (...)`: exactly one policy per table, every one byte-for-byte matching its migration file (`0001`/`0005`/`0007`/`0009`). No dashboard drift, no `using (true)`, no duplicates. Full record in `docs/SECURITY_REPORT.md` §5 follow-up. **Re-confirmed 2026-09-16**: none of the migrations that landed since (`0011`–`0014`, covering shop signup, the redundant shops INSERT policies, AI rate limiting, and RPC skip-warnings) touch policies on any of these 8 tables, so this result still holds — the `shops` leak was isolated, not systemic, and remains the only confirmed drift found across all 10 RLS-protected tables.
+2. ~~Remove the two now-redundant `shops` INSERT policies~~ — **Done** (`0012_drop_redundant_shops_insert_policies.sql`), confirmed no code path used raw inserts anymore, and re-verified signup still works via `create_shop_and_owner` afterward.
+3. ~~Continue Phase 4 (`app.js` inventory/returns/reports/auth/POS extraction)~~ — **Done**, see Phase 4 section above; `app.js` is now 1,743 lines, merged to `main`.
 
-No further code changes are made by this plan document itself; execution of any numbered step above is a separate, explicit next step requiring your go-ahead.
+Remaining open items, per §1's Phase 5/7 status above: the RPC/RLS automated-test-coverage gap (recommended to start before Phase 7 is considered complete) and Phase 7's offline-sync-state formalization are both still not started.
