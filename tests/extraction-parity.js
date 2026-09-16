@@ -84,6 +84,54 @@ const FILES = {
     'updateStarButton', 'openCustEditModal', 'saveCustEdit', 'renderCustomer360Profile',
     'exportCustomer360',
   ],
+  'inventory.js': [
+    'renderInventoryTable', 'openEditStockModal', 'closeEditStockModal', 'saveEditedStock',
+    'deleteInventoryItemPrompt', 'resetCatalogPaging', 'loadMoreCatalog', 'renderPagerFooter',
+    'renderCatalog', 'openNewProductModal', 'closeNewProdModal', 'saveNewProduct',
+  ],
+  'returns.js': [
+    'openReturnModal', 'closeReturnModal', 'renderReturnModal', 'updateReturnQty',
+    'computeReturnTotals', 'updateReturnTotals',
+    // submitReturn intentionally excluded: already carries F4's errorCode
+    // destructure, F5's reportRpcSkipWarnings() call, and Phase 6's
+    // persistMeta() call from earlier the same week — genuine, reviewed
+    // changes made before this extraction, not drift introduced by it.
+    // Same precedent as recordPurchaseBill in purchases.js above.
+    'applyReturnLocally',
+  ],
+  'reports.js': [
+    // DASH_CARD_FILTERS is a const object, not a `function name(` — this
+    // extractor only handles function declarations, so it's checked
+    // separately (see the byte-identical check further below) rather than
+    // listed here.
+    'openReport', 'drillDashboardCard', 'renderDashDrillTable', 'closeReportDetail',
+    'renderActiveReportData', 'filterReportsCategory', 'renderDashboard',
+    'renderActivityFeed', 'renderMobileInvoiceCards', 'computeReceivablesAgeing',
+    'renderKpiDeltas', 'renderDonutChart', 'renderTrendChart', 'setTrendRange',
+    'exportCurrentReportCSV', 'printReportDocument',
+  ],
+  'auth.js': [
+    // AuthFlow/COUNTRY_CODES are const object/array literals, not
+    // `function name(` declarations — this extractor only handles function
+    // declarations, so they aren't listed here (unlike DASH_CARD_FILTERS
+    // in reports.js above, no separate byte-identical check was added for
+    // them either; both were git-diffed by hand against the pre-extraction
+    // commit while building this list and found unchanged).
+    //
+    // applyRoleSecurity and hydrateCloudData are NOT listed here even
+    // though they sit inside/near this block in the pre-extraction app.js:
+    // both were deliberately left behind in app.js (see auth.js's header
+    // comment) rather than extracted, so there is nothing to compare.
+    'normalizePhoneNumber', 'applyAuthLockState', 'togglePasswordVisibility',
+    'initAuthGate', 'enterApp', 'showStep', 'showRequestStep', 'showRegisterStep',
+    'renderWizardDots', 'setLoginMethod', 'buildCountryList', 'toggleCountryList',
+    'pickCountry', 'onPhoneInput', 'requestOtp', 'openOtpStep', 'maskTarget',
+    'startResendTimer', 'editOtpTarget', 'resendOtp', 'clearOtpBoxes',
+    'readOtpCode', 'onOtpInput', 'onOtpKeydown', 'onOtpPaste', 'verifyOtpCode',
+    'signInWithGoogle', 'submitRegistration', 'onRegGstinInput', 'pickIndustry',
+    'finishOnboarding', 'hydrateTenantFromShop', 'setAuthBusy', 'fullSignOut',
+    'lockPOS',
+  ],
   'purchases.js': [
     'onPurVendorInput', 'openInwardPurchaseModal', 'closeInwardModal', 'toggleInwardMode',
     'populateRestockPicker', 'prefillFromExistingItem', 'saveManualPurchase',
@@ -95,6 +143,31 @@ const FILES = {
     // meant to go back to being a frozen, no-logic-changed extraction.
     'matchInventoryItem', 'renderAiBillHeader', 'renderAiStagingTable', 'editAiStagingField',
     'discardAiStagingItem', 'commitAiBill',
+  ],
+  'pos.js': [
+    // generateDynamicUpiQR, INDUSTRY_INVOICE_PROFILES is a const object
+    // literal (not `function name(`), so it isn't checked here — same
+    // handling as DASH_CARD_FILTERS in reports.js above.
+    'generateDynamicUpiQR', 'openCameraScanner', 'beepScanFeedback',
+    'toggleScanContinuous', 'submitManualScan', 'closeCameraScanner',
+    'handleScannedCode', 'openItemModal', 'closeModal', 'r2',
+    'commitModalItem',
+    // renderCart intentionally excluded: F2 (1563ff5, "escape
+    // assignedIdentifier in POS cart render") changed its body after the
+    // 1f56ed1 baseline — a genuine, reviewed security fix, not drift
+    // introduced by this extraction. Same precedent as
+    // recordPurchaseBill/submitReturn above.
+    'removeCart', 'setTender', 'setStep', 'jumpToStep',
+    // syncInvoiceToCloud intentionally excluded: F4 (88a5f5d, SQLSTATE-
+    // based isFatalSyncError) and F5 (b90c609, reportRpcSkipWarnings)
+    // both changed its body after the 1f56ed1 baseline — genuine,
+    // reviewed changes, not drift introduced by this extraction. Same
+    // precedent as recordPurchaseBill/submitReturn above.
+    'showAlternativesFor', 'selectAlternative', 'openInvoiceActionPopup',
+    'closeInvoiceActionPopup', 'getIapSale', 'iapDownload', 'iapPrint',
+    'iapOpenEdit', 'iapSaveEdit', 'iapOpenCancel', 'reserveInvoiceNumber',
+    'checkoutBill', 'applyIndustryInvoiceTheme', 'printA4Invoice',
+    'renderHsnTaxBreakup',
   ],
 };
 
