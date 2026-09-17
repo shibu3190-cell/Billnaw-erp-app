@@ -79,7 +79,7 @@ Any deviation in this checklist is a **stop condition** requiring explicit appro
 
 - Every phase: `tests/run-tests.js` and `tests/shop-day-simulation.js` must pass before and after.
 - Phase 6/7: new automated tests required for offline queue idempotency and conflict states (currently untested — AUDIT_REPORT.md §8).
-- Phase 5: new automated tests required for the atomic RPCs and RLS policies (currently zero coverage — the single biggest gap identified in the audit). This should not wait until Phase 5 — recommend starting this test-writing work in parallel with Phase 2/3, since it requires no frontend changes at all.
+- ~~Phase 5: new automated tests required for the atomic RPCs and RLS policies~~ **Done 2026-09-17**, in parallel with Phase 4 rather than waiting for Phase 5 as originally planned — see `tests/rpc-rls-tests.js` (`npm run test:rpc`). Surfaced a real HIGH-severity finding (SECURITY_REPORT.md F0: no INSERT policy on `shops`/`profiles`) that needs a live-Supabase-project check and, depending on the answer, an approved RLS-changing migration before Phase 5's service layer can safely assume shop/profile creation works as documented.
 - Before Phase 8: manual RUNBOOK test plan (all 18 tests) re-run in full against the pre-React app as a final baseline snapshot to compare against post-migration behavior.
 
 ## 4. Rollback Points

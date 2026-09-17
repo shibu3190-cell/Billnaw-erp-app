@@ -6,9 +6,11 @@
     "dev": "vite",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "test": "node tests/run-tests.js && node tests/shop-day-simulation.js && node tests/gst-parity.js && node tests/escape-parity.js && node tests/alerts-parity.js && node tests/export-parity.js && node tests/printer-parity.js"
+    "test": "node tests/run-tests.js && node tests/shop-day-simulation.js && node tests/gst-parity.js && node tests/escape-parity.js && node tests/alerts-parity.js && node tests/export-parity.js && node tests/printer-parity.js",
+    "test:rpc": "bash tests/run-rpc-rls-suite.sh"
   },
   "devDependencies": {
+    "pg": "^8.23.0",
     "typescript": "^5.6.3",
     "vite": "^7.1.0"
   }
