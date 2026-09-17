@@ -108,26 +108,24 @@ const SB = {
   // Called after OTP verification, when the auth user exists but has no
   // shop yet. Deliberately not called earlier: creating the shop before
   // verification leaves orphan rows for every abandoned signup.
+  // Routes through the create_shop_for_current_user RPC (migration 0010)
+  // rather than plain .insert() calls — neither `shops` nor `profiles` has
+  // (or should have) a client-facing INSERT policy, since a raw insert
+  // policy on profiles can't safely stop a user from attaching themselves
+  // to a shop that isn't theirs. The RPC does both inserts atomically and
+  // checks the caller doesn't already have a profile before creating one.
   async createShopForCurrentUser({ shopName, ownerName, phone, email, address, gstin, stateCode, industry }) {
     const { data: { session } } = await _sb.auth.getSession();
     if (!session) return { error: 'Session expired. Please sign in again.' };
 
     const resolvedState = stateCode || (gstin && gstin.length >= 2 ? gstin.slice(0, 2) : null);
 
-    const { data: shop, error: shopErr } = await _sb
-      .from('shops')
-      .insert({
-        name: shopName, owner_name: ownerName, phone, email: email || null,
-        address, gstin: gstin || null, state_code: resolvedState,
-        industry, is_locked: industry !== 'All'
-      })
-      .select().single();
-    if (shopErr) return { error: shopErr.message };
-
-    const { error: profileErr } = await _sb
-      .from('profiles')
-      .insert({ id: session.user.id, shop_id: shop.id, role: 'owner', full_name: ownerName || shopName });
-    if (profileErr) return { error: profileErr.message };
+    const { data: shop, error } = await _sb.rpc('create_shop_for_current_user', {
+      p_name: shopName, p_owner_name: ownerName, p_phone: phone, p_address: address,
+      p_email: email || null, p_gstin: gstin || null, p_state_code: resolvedState,
+      p_industry: industry, p_is_locked: industry !== 'All'
+    });
+    if (error) return { error: error.message };
 
     return { shop };
   },

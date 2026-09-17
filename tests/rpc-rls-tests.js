@@ -399,29 +399,29 @@ async function main() {
   });
 
   // ======================================================================
-  group('KNOWN GAP -- new-shop signup insert policy (see SECURITY_REPORT.md)');
+  group('RAW INSERT into shops/profiles stays blocked (by design, not a gap)');
+  // Migration 0010 fixed the confirmed production bug (SECURITY_REPORT.md
+  // F0: no INSERT policy existed anywhere for shops/profiles, so
+  // createShopForCurrentUser()'s plain client inserts were rejected) by
+  // adding create_shop_for_current_user(), a security definer RPC -- NOT
+  // by adding a raw INSERT policy. These two tests now confirm the
+  // deliberate remaining half of that design: direct client inserts into
+  // shops/profiles must still be rejected (a raw profiles INSERT policy
+  // can't safely stop someone from attaching themselves to an existing
+  // shop_id they don't own -- see migration 0010's header comment), so
+  // create_shop_for_current_user() stays the only sanctioned path.
   // ======================================================================
-  await test('[DOCUMENTS A REAL FINDING] shops has no INSERT policy: a brand-new signup insert is rejected under RLS', async () => {
+  await test('raw insert into shops is still rejected -- create_shop_for_current_user() is the only sanctioned path', async () => {
     const brandNewUser = uuid();
     await admin.query(`insert into auth.users (id) values ('${brandNewUser}')`);
     await loginAs(brandNewUser);
-    // This mirrors exactly what supabaseClient.js's createShopForCurrentUser()
-    // does: a plain client-side insert into `shops` as the newly-authenticated
-    // user, with no profiles row yet (there's nothing to check shop_id/role
-    // against, since none exists). No INSERT policy exists anywhere across
-    // all 9 migrations for `shops` or `profiles` -- RLS default-denies any
-    // write with no matching policy, for every role including the row's own
-    // future owner. If this test's rejection ever starts passing (i.e. the
-    // insert succeeds), it means a migration added the missing policy --
-    // that's progress, not a regression, and this test should be deleted at
-    // that point rather than "fixed" to expect success.
     await expectReject(
       app.query(`insert into shops (name, phone, address) values ('Brand New Shop', '9999999998', 'New Addr')`),
       'row-level security'
     );
   });
 
-  await test('[DOCUMENTS THE SAME GAP] profiles has no INSERT policy either -- assign_staff_to_shop() is the only sanctioned bypass, and only for cashiers', async () => {
+  await test('raw insert into profiles is still rejected -- assign_staff_to_shop()/create_shop_for_current_user() are the only sanctioned paths', async () => {
     const brandNewUser2 = uuid();
     const someShop = shopA;
     await admin.query(`insert into auth.users (id) values ('${brandNewUser2}')`);
@@ -429,6 +429,54 @@ async function main() {
     await expectReject(
       app.query(`insert into profiles (id, shop_id, role) values ('${brandNewUser2}', '${someShop}', 'owner')`),
       'row-level security'
+    );
+  });
+
+  // ======================================================================
+  group('create_shop_for_current_user (migration 0010 -- the actual fix)');
+  // ======================================================================
+  let newShopUser, newShopResult;
+  await test('a brand-new authenticated user can register a shop, and gets an owner profile atomically', async () => {
+    newShopUser = uuid();
+    await admin.query(`insert into auth.users (id) values ('${newShopUser}')`);
+    await loginAs(newShopUser);
+    const res = await app.query(
+      `select create_shop_for_current_user('New Shop Inc', 'New Owner', '9876500099', 'Some Address', null, null, '19', 'All', false) as shop`
+    );
+    newShopResult = res.rows[0].shop;
+    ok(newShopResult.id, 'a shop row was returned');
+    eq(newShopResult.name, 'New Shop Inc');
+
+    const profile = await admin.query(`select shop_id, role from profiles where id = '${newShopUser}'`);
+    eq(profile.rows.length, 1);
+    eq(profile.rows[0].shop_id, newShopResult.id);
+    eq(profile.rows[0].role, 'owner');
+  });
+
+  await test('the same user cannot register a second shop (prevents orphaning/duplicate signup)', async () => {
+    await loginAs(newShopUser);
+    await expectReject(
+      app.query(`select create_shop_for_current_user('Second Shop', 'New Owner', '9876500098', 'Addr', null, null, '19', 'All', false) as shop`),
+      'already linked to a shop'
+    );
+  });
+
+  await test('the anti-hijack guard: an existing staff member cannot use this RPC to attach themselves to a different shop', async () => {
+    // cashierA already has a profile (fixture setup) -- confirms the "does
+    // this account already have a profile" check also protects existing
+    // staff, not just repeat signups.
+    await loginAs(cashierA);
+    await expectReject(
+      app.query(`select create_shop_for_current_user('Hijack Attempt', 'Cashier A', '9876500097', 'Addr', null, null, '19', 'All', false) as shop`),
+      'already linked to a shop'
+    );
+  });
+
+  await test('an unauthenticated call (no JWT claim set) is rejected, not silently allowed', async () => {
+    await logout();
+    await expectReject(
+      app.query(`select create_shop_for_current_user('No Auth Shop', 'Nobody', '9876500096', 'Addr', null, null, '19', 'All', false) as shop`),
+      'Must be signed in'
     );
   });
 

@@ -88,7 +88,8 @@ su postgres -c "$PG_BIN/psql -h $SOCK_DIR -d $DB_NAME -v ON_ERROR_STOP=1 -q -f $
 for f in 0001_init.sql 0002_stock_rpc.sql 0003_atomic_invoice.sql \
          0004_role_cost_visibility.sql 0005_sales_returns.sql \
          0006_alerts_logo_composition.sql 0007_purchases_vendors.sql \
-         0008_subscription_plans.sql 0009_customer_lifecycle_b2b.sql; do
+         0008_subscription_plans.sql 0009_customer_lifecycle_b2b.sql \
+         0010_shop_signup_atomic.sql; do
   su postgres -c "$PG_BIN/psql -h $SOCK_DIR -d $DB_NAME -v ON_ERROR_STOP=1 -q -f $MIGRATIONS_DIR/$f"
 done
 
