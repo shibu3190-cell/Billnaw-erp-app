@@ -754,25 +754,6 @@ function closeSidebarDrawer() {
   if (backdrop) backdrop.classList.remove('visible');
 }
 
-// Hardware Barcode Interceptor
-let barcodeBuffer = "";
-let barcodeTimer = null;
-window.addEventListener('keypress', (e) => {
-  const authEl = $id('authOverlay');
-  if (authEl && authEl.classList.contains('hidden')) {
-    if (e.key === 'Enter') {
-      if (barcodeBuffer.length > 2) {
-        handleScannedCode(barcodeBuffer);
-      }
-      barcodeBuffer = "";
-    } else {
-      barcodeBuffer += e.key;
-      clearTimeout(barcodeTimer);
-      barcodeTimer = setTimeout(() => { barcodeBuffer = ""; }, 60);
-    }
-  }
-});
-
 /* ==========================================================================
    GLOBAL SCOPE ATTACHMENT
    ========================================================================== */
@@ -828,13 +809,6 @@ window.toggleSidebarDrawer = toggleSidebarDrawer;
 window.closeSidebarDrawer = closeSidebarDrawer;
 
 
-function expandMobileSearch(e) {
-  const box = $id('globalSearchBox');
-  if (!box || box.classList.contains('expanded')) return;
-  if (window.innerWidth > 640) return; // desktop is always expanded, nothing to do
-  box.classList.add('expanded');
-  $id('globalSearchInput')?.focus();
-}
 
 window.handleKhataSearch = handleKhataSearch;
 window.setKhataFilter = setKhataFilter;

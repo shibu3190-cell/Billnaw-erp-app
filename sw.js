@@ -2,7 +2,7 @@
    BILLNAW SERVICE WORKER
    Bump CACHE_NAME on every deploy — this is what triggers the update flow.
    ========================================================================== */
-const CACHE_NAME = 'billnaw-v38.0-catalog-pagination-module-extraction';
+const CACHE_NAME = 'billnaw-v39.0-hardware-mobile-search-module-extraction';
 const STATIC_ASSETS = [
   './',
   './index.html',
@@ -28,6 +28,7 @@ const STATIC_ASSETS = [
   './misc.js',
   './gstsettings.js',
   './catalog.js',
+  './hardware.js',
   './supabaseClient.js',
   './manifest.json',
   './icon.svg'
