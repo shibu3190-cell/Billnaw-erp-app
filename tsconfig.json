@@ -30,6 +30,7 @@
     "scanner.js",
     "misc.js",
     "gstsettings.js",
+    "catalog.js",
     "supabaseClient.js",
     "app.js",
     "src/**/*.ts"
