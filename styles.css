@@ -1,4 +1,11 @@
 :root {
+  /* iPhone / Safari safe-area values. These keep fixed UI from being hidden by
+     the notch or Home Indicator while the app runs as a PWA / standalone app. */
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+
   /* ---- BILLNAW DESIGN TOKENS ----------------------------------------
      Palette follows the login screen: indigo-lavender primary, mint for
      positive/success, coral reserved strictly for genuine problems (overdue,
@@ -79,10 +86,20 @@
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
-body { font-family: var(--font-main); background: var(--canvas); color: var(--text-dark); height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+body {
+  font-family: var(--font-main); background: var(--canvas); color: var(--text-dark);
+  height: 100vh; min-height: 100dvh; display: flex; flex-direction: column; overflow: hidden;
+  padding-top: var(--safe-top);
+  padding-left: var(--safe-left);
+  padding-right: var(--safe-right);
+  overscroll-behavior-y: contain;
+}
 
 /* SHELL LAYOUT */
-.app-shell { display: flex; height: 100vh; width: 100vw; overflow: hidden; }
+.app-shell {
+  display: flex; height: calc(100vh - var(--safe-top)); min-height: calc(100dvh - var(--safe-top));
+  width: 100vw; max-width: 100%; overflow: hidden; padding-bottom: 0;
+}
 .sidebar { width: 250px; background: var(--forest-dark); color: #fff; display: flex; flex-direction: column; flex-shrink: 0; border-right: 1px solid var(--forest-border); }
 .sidebar-brand { padding: 18px 16px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--forest-border); }
 .brand-icon { width: 36px; height: 36px; background: var(--accent-gold); border-radius: var(--radius-sm); display: flex; align-items: center; justify-content: center; font-weight: 800; color: var(--forest-dark); font-size: 1.2rem; overflow: hidden; }
@@ -95,8 +112,12 @@ body { font-family: var(--font-main); background: var(--canvas); color: var(--te
 .nav-item:hover { background: rgba(255,255,255,0.06); color: #fff; }
 .nav-item.active { background: var(--forest-panel); color: var(--accent-gold); border: 1px solid var(--forest-border); }
 
-.content-body { flex: 1; display: flex; flex-direction: column; overflow: hidden; background: var(--canvas); position: relative; }
-.top-nav { height: 60px; background: var(--surface); border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; padding: 0 20px; gap: 12px; }
+.content-body { flex: 1; display: flex; flex-direction: column; overflow: hidden; background: var(--canvas); position: relative; padding-top: 0; }
+.top-nav {
+  height: 60px; background: var(--surface); border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between; padding: 0 20px 0 calc(20px + var(--safe-left));
+  gap: 12px;
+}
 .global-search-box { position: relative; flex: 1; max-width: 420px; }
 .global-search-box input { width: 100%; padding: 9px 14px 9px 36px; font-size: 0.88rem; border: 1.5px solid var(--border); border-radius: 20px; outline: none; background: #fff; }
 .global-search-box .icon { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--text-muted); }
@@ -109,7 +130,10 @@ body { font-family: var(--font-main); background: var(--canvas); color: var(--te
 .btn-pill.secondary { background: var(--info); color: #fff; box-shadow: 0 2px 8px rgba(2,132,199,0.3); }
 .btn-pill.secondary:hover { background: #0369a1; }
 
-.view-container { flex: 1; overflow-y: auto; padding: 20px; display: none; }
+.view-container {
+  flex: 1; overflow-y: auto; padding: 20px calc(20px + var(--safe-right)) 20px calc(20px + var(--safe-left));
+  display: none; padding-bottom: calc(20px + env(safe-area-inset-bottom) + 72px);
+}
 .view-container.active { display: block; animation: fadeIn 0.15s ease-out; }
 @keyframes fadeIn { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: translateY(0); } }
 
@@ -144,11 +168,17 @@ body { font-family: var(--font-main); background: var(--canvas); color: var(--te
   .mobile-bottom-nav {
     display: flex; position: fixed; left: 0; right: 0; bottom: 0;
     height: calc(66px + env(safe-area-inset-bottom));
-    padding-bottom: env(safe-area-inset-bottom);
+    padding-bottom: max(env(safe-area-inset-bottom), 8px);
+    padding-left: var(--safe-left); padding-right: var(--safe-right);
     background: var(--surface);
     border-top: 1px solid var(--border);
     box-shadow: 0 -4px 20px rgba(23,26,46,0.07);
     z-index: 500; justify-content: space-around; align-items: center;
+    padding-top: 6px;
+  }
+  .content-body { padding-bottom: calc(16px + var(--safe-bottom)); }
+  .view-container {
+    padding-bottom: calc(96px + env(safe-area-inset-bottom));
   }
   .mob-nav-item {
     background: none; border: none; color: var(--text-faint);
@@ -278,7 +308,11 @@ body { font-family: var(--font-main); background: var(--canvas); color: var(--te
 .modal-body { padding: 16px; display: flex; flex-direction: column; gap: 10px; max-height: 80vh; overflow-y: auto; }
 .form-input { display: flex; flex-direction: column; gap: 4px; }
 .form-input label { font-size: 0.75rem; font-weight: 700; color: var(--text-muted); }
-.form-input input, .form-input select, .form-input textarea { padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); outline: none; font-size: 0.85rem; font-family: inherit; }
+.form-input input, .form-input select, .form-input textarea {
+  padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); outline: none;
+  font-size: 0.85rem; font-family: inherit; min-height: 44px;
+}
+.form-input textarea { min-height: 90px; resize: vertical; }
 
 .data-table { width: 100%; border-collapse: collapse; background: #fff; border-radius: var(--radius-md); overflow: hidden; }
 .data-table th, .data-table td { padding: 9px 12px; border-bottom: 1px solid var(--border); text-align: left; font-size: 0.82rem; }
@@ -880,6 +914,15 @@ select.auth-field { appearance: none; }
 .ic.lg { width: 22px; height: 22px; }
 .ic.xl { width: 26px; height: 26px; stroke-width: 1.6; }
 
+/* Keep every cross/close control visually consistent across modal headers. */
+button[onclick*="close"][style*="font-size"],
+button[aria-label="Close"],
+button[aria-label="Close menu"],
+.sp-back,
+.drawer-close-btn {
+  color: #4B5563 !important;
+}
+
 /* ==========================================================================
    SETTINGS — card-list home + slide-over panels
    ========================================================================== */
@@ -920,6 +963,7 @@ select.auth-field { appearance: none; }
   transform: translateX(100%);
   transition: transform .26s cubic-bezier(.2,.8,.2,1);
   box-shadow: -12px 0 40px rgba(23,26,46,0.18);
+  padding-top: var(--safe-top);
 }
 .settings-panel.open { transform: translateX(0); }
 
@@ -935,10 +979,14 @@ select.auth-field { appearance: none; }
 }
 .sp-back:hover { background: var(--brand-soft); border-color: #C7C6F0; }
 
-.settings-panel-body { flex: 1; overflow-y: auto; padding: 18px 20px 90px; display: flex; flex-direction: column; gap: 16px; }
+.settings-panel-body {
+  flex: 1; overflow-y: auto; padding: calc(18px + var(--safe-top)) 20px calc(90px + var(--safe-bottom));
+  display: flex; flex-direction: column; gap: 16px;
+}
 .settings-panel-foot {
   position: sticky; bottom: 0; flex: 0 0 auto;
-  padding: 14px 20px; background: var(--surface);
+  padding: 14px calc(20px + var(--safe-right)) calc(14px + var(--safe-bottom)) calc(20px + var(--safe-left));
+  background: var(--surface);
   border-top: 1px solid var(--border);
 }
 .settings-panel-foot .btn-checkout-act { width: 100%; }
@@ -973,7 +1021,20 @@ select.auth-field { appearance: none; }
 
 @media (max-width: 640px) {
   .settings-panel { width: 100vw; }
-  .settings-panel-body { padding-bottom: 100px; }
+  .settings-panel-body { padding-bottom: calc(100px + var(--safe-bottom)); }
+  .modal-backdrop { padding: 12px; }
+  .modal-window {
+    width: min(100%, 100%);
+    max-height: calc(100vh - 24px - var(--safe-top) - var(--safe-bottom));
+    border-radius: 18px;
+  }
+  .modal-body { max-height: calc(100vh - 180px); padding: 14px; }
+  .form-input input, .form-input select, .form-input textarea {
+    font-size: 16px; min-height: 46px; width: 100%;
+  }
+  .form-input textarea { min-height: 100px; }
+  .settings-block { padding: 14px; }
+  .gst-pref-row { grid-template-columns: 1fr; }
 }
 
 
