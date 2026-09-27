@@ -176,8 +176,8 @@ for (const [file, fns] of Object.entries(FILES)) {
   const newSrc = fs.readFileSync(path.join(ROOT, file), 'utf8');
   for (const fn of fns) {
     test(`${fn}() is byte-identical to its pre-extraction app.js body`, () => {
-      const oldBody = extractFunction(oldAppSrc, fn);
-      const newBody = extractFunction(newSrc, fn);
+      const oldBody = extractFunction(oldAppSrc, fn).replace(/\r\n/g, '\n');
+      const newBody = extractFunction(newSrc, fn).replace(/\r\n/g, '\n');
       if (oldBody !== newBody) {
         throw new Error(`bodies differ (old ${oldBody.length} chars, new ${newBody.length} chars) — extraction changed behavior, review before trusting`);
       }

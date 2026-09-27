@@ -58,7 +58,7 @@ supabase functions logs ai-invoice-parse --tail
 # How the flow works
 
 ```
-Photo/PDF  →  Edge Function  →  Gemini 2.0 Flash (structured output)
+Photo/PDF  →  Edge Function  →  Gemini 2.5 Flash (structured output)
                     ↓
            normaliseAndReconcile()      ← arithmetic re-derived, not trusted
                     ↓
@@ -115,7 +115,7 @@ before merging.**
 
 ## Cost
 
-Gemini 2.0 Flash is roughly ₹0.01–0.03 per invoice at current pricing. A shop
+Gemini 2.5 Flash is roughly ₹0.01–0.03 per invoice at current pricing. A shop
 entering 30 supplier bills a month spends under ₹1. Free tier likely covers it
 entirely.
 
