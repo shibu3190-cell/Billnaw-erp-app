@@ -24,7 +24,12 @@ const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY");
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
 const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY");
 
-const CANDIDATE_MODELS = ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-1.5-flash"];
+const CANDIDATE_MODELS = [
+  "gemini-3.5-flash",
+  "gemini-2.5-flash",
+  "gemini-3.7-flash",
+  "gemini-3.8-flash",
+];
 const MAX_IMAGE_BYTES = 12 * 1024 * 1024; // ~9MB of source image after base64
 
 const CORS_HEADERS = {
