@@ -24,7 +24,7 @@ const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY");
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
 const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY");
 
-const MODEL = "gemini-3.8-flash";
+const CANDIDATE_MODELS = ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-1.5-flash"];
 const MAX_IMAGE_BYTES = 12 * 1024 * 1024; // ~9MB of source image after base64
 
 const CORS_HEADERS = {
@@ -188,42 +188,79 @@ Deno.serve(async (req: Request) => {
       return json({ error: "File too large — compress below ~9MB and retry" }, 413);
     }
 
-    /* ---- 3. Call Gemini with structured output ---- */
-    const geminiResp = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${GEMINI_API_KEY}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
-          contents: [{
-            role: "user",
-            parts: [
-              { text: "Extract this supplier purchase invoice." },
-              { inline_data: { mime_type: mimeType, data: body.image_base64 } },
-            ],
-          }],
-          generationConfig: {
-            // Near-zero temperature: this is transcription, not writing.
-            // Any creativity here is a hallucinated invoice number.
-            temperature: 0.05,
-            topP: 0.1,
-            maxOutputTokens: 8192,
-            responseMimeType: "application/json",
-            responseSchema: RESPONSE_SCHEMA,
-          },
-        }),
-      }
-    );
+    /* ---- 3. Call Gemini with structured output (with retry & model fallback) ---- */
+    let geminiResp: Response | null = null;
+    let lastErrorStatus = 500;
+    let lastErrorDetail = "";
+    let usedModel = CANDIDATE_MODELS[0];
 
-    if (!geminiResp.ok) {
-      const detail = await geminiResp.text();
-      console.error("Gemini error:", geminiResp.status, detail);
+    for (const model of CANDIDATE_MODELS) {
+      usedModel = model;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        if (attempt > 0) {
+          // Exponential backoff + jitter (1s - 2s)
+          await new Promise((r) => setTimeout(r, 1000 * attempt + Math.random() * 500));
+        }
+
+        try {
+          const resp = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+                contents: [{
+                  role: "user",
+                  parts: [
+                    { text: "Extract this supplier purchase invoice." },
+                    { inline_data: { mime_type: mimeType, data: body.image_base64 } },
+                  ],
+                }],
+                generationConfig: {
+                  temperature: 0.05,
+                  topP: 0.1,
+                  maxOutputTokens: 8192,
+                  responseMimeType: "application/json",
+                  responseSchema: RESPONSE_SCHEMA,
+                },
+              }),
+            }
+          );
+
+          if (resp.ok) {
+            geminiResp = resp;
+            break;
+          }
+
+          lastErrorStatus = resp.status;
+          lastErrorDetail = await resp.text();
+          console.warn(`Gemini ${model} attempt ${attempt + 1} returned ${resp.status}:`, lastErrorDetail.slice(0, 150));
+
+          // If error is 400 Bad Request or 404 Not Found, don't retry the same model
+          if (resp.status >= 400 && resp.status < 500 && resp.status !== 429) {
+            break;
+          }
+        } catch (fetchErr) {
+          lastErrorDetail = String(fetchErr);
+          console.warn(`Gemini ${model} attempt ${attempt + 1} network error:`, fetchErr);
+        }
+      }
+
+      if (geminiResp?.ok) break;
+    }
+
+    if (!geminiResp || !geminiResp.ok) {
+      console.error("All Gemini candidate models failed. Last status:", lastErrorStatus, lastErrorDetail);
+      let userMsg = "AI provider error";
+      if (lastErrorStatus === 503) {
+        userMsg = "Google AI is currently experiencing high demand. Please try again in a few moments, or enter the bill manually.";
+      } else if (lastErrorStatus === 429) {
+        userMsg = "AI quota exceeded — try again shortly, or enter the bill manually.";
+      }
       return json({
-        error: geminiResp.status === 429
-          ? "AI quota exceeded — try again shortly, or enter the bill manually."
-          : "AI provider error",
-        detail: detail.slice(0, 500),
+        error: userMsg,
+        detail: lastErrorDetail.slice(0, 500),
       }, 502);
     }
 
@@ -250,7 +287,7 @@ Deno.serve(async (req: Request) => {
     }
 
     /* ---- 4. Normalise, validate, reconcile ---- */
-    const result = normaliseAndReconcile(parsed);
+    const result = normaliseAndReconcile(parsed, usedModel);
 
     /* ---- 5. Stage server-side ---- */
     // Written before the response is returned so a dropped connection or a
@@ -284,7 +321,7 @@ Deno.serve(async (req: Request) => {
    derived figure wins and the discrepancy is surfaced so the human
    reviewing the staging table knows which bills need a closer look.
    ========================================================================== */
-function normaliseAndReconcile(parsed: any) {
+function normaliseAndReconcile(parsed: any, modelName: string = CANDIDATE_MODELS[0]) {
   const warnings: string[] = [];
   const round2 = (n: number) => {
     if (!isFinite(n)) return 0;
@@ -487,7 +524,7 @@ function normaliseAndReconcile(parsed: any) {
       confidence,
       warnings,
       item_count: bill_items.length,
-      model: MODEL,
+      model: modelName,
       extracted_at: new Date().toISOString(),
     },
   };
