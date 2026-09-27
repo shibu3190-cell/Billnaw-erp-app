@@ -1410,9 +1410,9 @@
 
         <div id="inwardAiView" style="display:none;">
           <div class="ai-dropzone-box" onclick="document.getElementById('aiDocInput').click()">
-            <input type="file" id="aiDocInput" accept="image/*,.pdf" style="display:none;" onchange="processAiInvoice(event)">
+            <input type="file" id="aiDocInput" accept=".jpg,.jpeg,.png,.pdf,image/jpeg,image/png,image/webp,image/heic,application/pdf" style="display:none;" onchange="processAiInvoice(event)">
             <h3>📷 Upload Supplier Invoice Snapshot</h3>
-            <p style="font-size:0.78rem; color:var(--text-muted); margin-top:4px;">Gemini Vision parses line items, HSN, batch, serials, HUIDs &amp; GST slabs automatically</p>
+            <p style="font-size:0.78rem; color:var(--text-muted); margin-top:4px;">Supports JPG, PNG, and PDF invoices. Gemini parses line items, HSN, batch, serials, HUIDs &amp; GST slabs automatically</p>
           </div>
 
           <div id="aiProgressBox" style="display:none; margin-top:12px; padding:14px; background:var(--brand-soft); border-radius:12px; text-align:center;">

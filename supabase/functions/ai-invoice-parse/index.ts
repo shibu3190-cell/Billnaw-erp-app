@@ -185,9 +185,11 @@ Deno.serve(async (req: Request) => {
     const body = await req.json().catch(() => null);
     if (!body?.image_base64) return json({ error: "image_base64 is required" }, 400);
 
-    const mimeType = body.mime_type || "image/jpeg";
+    let mimeType = body.mime_type || "image/jpeg";
+    if (mimeType === "image/jpg" || mimeType === "image/pjpeg") mimeType = "image/jpeg";
+    if (mimeType === "application/x-pdf") mimeType = "application/pdf";
     if (!/^(image\/(jpeg|png|webp|heic)|application\/pdf)$/.test(mimeType)) {
-      return json({ error: `Unsupported file type: ${mimeType}` }, 400);
+      return json({ error: `Unsupported file type: ${mimeType}. Please upload a JPG, PNG, or PDF file.` }, 400);
     }
     if (body.image_base64.length > MAX_IMAGE_BYTES) {
       return json({ error: "File too large — compress below ~9MB and retry" }, 413);
